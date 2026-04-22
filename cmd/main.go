@@ -78,10 +78,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.VolumeGroupReplicationReconciler{
+	reconcilerLog := ctrl.Log.WithName("controller").WithName("VolumeGroupReplication")
+	reconciler := &controller.VolumeGroupReplicationReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err = reconciler.SetupWithManager(mgr, reconcilerLog); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VolumeGroupReplication")
 		os.Exit(1)
 	}
