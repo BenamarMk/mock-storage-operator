@@ -3,6 +3,7 @@
 This document provides step-by-step instructions for deploying the Mock Storage Operator and setting up VolumeGroupReplication for disaster recovery testing using ConfigMap-based PVC configuration.
 
 ## Table of Contents
+
 1. [Environment Setup](#environment-setup)
 2. [Prerequisites Installation](#prerequisites-installation)
 3. [Operator Deployment](#operator-deployment)
@@ -17,6 +18,7 @@ This document provides step-by-step instructions for deploying the Mock Storage 
 ### Required Infrastructure
 
 You need two Kubernetes clusters:
+
 - **Primary Cluster**: Source cluster where applications run
 - **Secondary Cluster**: Destination cluster for DR
 
@@ -67,13 +69,14 @@ kubectl apply -f https://raw.githubusercontent.com/csi-addons/kubernetes-csi-add
 
 ```bash
 # Check CRDs on primary
-kubectl get crd | grep replication.storage.openshift.io --context primary
+kubectl get crd --context primary | grep replication.storage.openshift.io
 
 # Check CRDs on secondary
-kubectl get crd | grep replication.storage.openshift.io --context secondary
+kubectl get crd --context secondary | grep replication.storage.openshift.io
 ```
 
 **Expected output:**
+
 ```
 volumegroupreplicationclasses.replication.storage.openshift.io    2026-04-05T10:00:00Z
 volumegroupreplicationcontents.replication.storage.openshift.io   2026-04-05T10:00:00Z
@@ -113,6 +116,7 @@ kubectl get pods -n volsync-system --context secondary
 ```
 
 **Expected output:**
+
 ```
 NAME                       READY   STATUS    RESTARTS   AGE
 volsync-7b8c9d5f4d-xxxxx   1/1     Running   0          1m
@@ -153,6 +157,7 @@ kubectl apply -k https://github.com/BenamarMk/mock-storage-operator/config/defau
 ```
 
 **What this deploys:**
+
 - Namespace: `mock-storage-operator-system`
 - ServiceAccount: `mock-storage-operator-controller-manager`
 - ClusterRole: `mock-storage-operator-manager-role`
@@ -170,6 +175,7 @@ kubectl get pods -n mock-storage-operator-system --context secondary
 ```
 
 **Expected output:**
+
 ```
 NAME                                                    READY   STATUS    RESTARTS   AGE
 mock-storage-operator-controller-manager-xxxxxxxxxx-xxxxx   1/1     Running   0          30s
@@ -285,6 +291,7 @@ kubectl get pvc -n myapp --context primary --show-labels
 ```
 
 **Expected output:**
+
 ```
 NAME            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE   LABELS
 mysql-data      Bound    pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   10Gi       RWO            standard       1m    app=myapp
@@ -306,10 +313,10 @@ metadata:
   namespace: myapp
 data:
   # Format: "pvc=<pvc-name>/<namespace>": "schedulingInterval=<value>:storageClassName=<value>:volumeSnapshotClassName=<value>"
-  
+
   # MySQL data - sync every 5 minutes
   "pvc=mysql-data/myapp": "schedulingInterval=5m:storageClassName=standard:volumeSnapshotClassName=csi-snapclass"
-  
+
   # PostgreSQL data - sync every 10 minutes
   "pvc=postgres-data/myapp": "schedulingInterval=10m:storageClassName=standard:volumeSnapshotClassName=csi-snapclass"
 EOF
@@ -357,10 +364,10 @@ spec:
   parameters:
     # Default capacity for ReplicationDestinations
     capacity: "10Gi"
-    
+
     # PSK secret name (optional, defaults to volsync-rsync-tls-<vgr-name>)
     pskSecretName: "volsync-rsync-tls-secret"
-    
+
     # ConfigMap name containing PVC configurations (required for secondary)
     pvcConfigMap: "pvc-config"
 EOF
@@ -445,6 +452,7 @@ kubectl wait --for=condition=Ready vgr/myapp-vgr -n myapp --context secondary --
 ```
 
 **Expected log output:**
+
 ```
 Found PVC configurations count=2 configMap=pvc-config
 ReplicationDestination created for PVC mysql-data
@@ -499,6 +507,7 @@ kubectl wait --for=condition=Ready vgr/myapp-vgr -n myapp --context primary --ti
 ```
 
 **Expected log output:**
+
 ```
 ReplicationSource created for PVC mysql-data
 ReplicationSource created for PVC postgres-data
@@ -528,7 +537,7 @@ kubectl get vgr myapp-vgr -n myapp --context secondary -o yaml
 
 ```yaml
 status:
-  state: Primary  # or Secondary
+  state: Primary # or Secondary
   conditions:
     - type: Ready
       status: "True"
@@ -659,6 +668,7 @@ kubectl logs test-reader -n myapp --context secondary
 ```
 
 **Expected output:**
+
 ```
 Data found:
 Test data at Fri Apr  5 10:30:00 UTC 2026

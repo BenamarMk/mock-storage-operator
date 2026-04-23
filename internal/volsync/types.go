@@ -3,6 +3,7 @@ package volsync
 import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Constants for VolSync operations
@@ -68,7 +69,7 @@ type ReplicationStatus struct {
 	KeySecret string
 
 	// LastSyncTime is the time of the last successful sync (for ReplicationSource)
-	LastSyncTime string
+	LastSyncTime *metav1.Time
 }
 
 // Made with Bob
