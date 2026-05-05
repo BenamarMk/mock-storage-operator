@@ -197,6 +197,14 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 			if rs.Status != nil {
 				latestSync = rs.Status.LastSyncTime
 			}
+
+			if latestSync != nil {
+				// Initialize annotations map if it doesn't exist
+				if pvc.Annotations == nil {
+					pvc.Annotations = make(map[string]string)
+				}
+				pvc.Annotations["mock.storage.io/lastSyncTime"] = latestSync.String()
+			}
 		}
 	}
 
@@ -205,21 +213,34 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 	vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs
 	vgr.Status.LastSyncTime = latestSync
 	vgr.Status.ObservedGeneration = vgr.Generation
-	
+
 	// Set Completed condition
 	setCondition(&vgr.Status.Conditions, "Completed", true,
 		"Promoted",
 		"volume group is promoted to primary and replicating to secondary",
 		vgr.Generation)
-	
+
 	// Set Validated condition
 	setCondition(&vgr.Status.Conditions, "Validated", true,
 		"PrerequisiteMet",
 		"volume group is validated and met all prerequisites",
 		vgr.Generation)
 
+	setCondition(&vgr.Status.Conditions, "Ready", true,
+		"ReplicationDestinationsReady",
+		"RS is created ad ready",
+		vgr.Generation)
+
 	if err := r.Status().Update(ctx, vgr); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+
+		if err := r.Client.Update(ctx, pvc); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update lastSyncTime annotation: %w", err)
+		}
 	}
 
 	logger.Info("Primary reconcile complete", "protectedPVCs", len(protectedPVCs))
@@ -286,7 +307,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 	// Get PSK secret name from parameters or use default
 	pskSecretName := vgrClass.Spec.Parameters["pskSecretName"]
 	if pskSecretName == "" {
-		pskSecretName = "volsync-rsync-tls-" + vgr.Name
+		pskSecretName = "volsync-rsync-tls-secret"
 	}
 
 	serviceType := volsync.DefaultRsyncServiceType
