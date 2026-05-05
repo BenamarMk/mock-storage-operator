@@ -203,7 +203,7 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 				if pvc.Annotations == nil {
 					pvc.Annotations = make(map[string]string)
 				}
-				pvc.Annotations["mock.storage.io/lastSyncTime"] = latestSync.String()
+				pvc.Annotations["mock.storage.io/lastSyncTime"] = latestSync.Format(time.RFC3339)
 			}
 		}
 	}
