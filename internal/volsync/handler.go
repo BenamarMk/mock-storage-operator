@@ -96,14 +96,14 @@ func (v *VSHandler) ReconcileRD(
 		return nil, nil
 	}
 
-	// Check if PVC is terminating - if so, create temporary PVC and delete the RS
+	// Check if PVC is terminating - if so, create temporary PVC and handle RS
 	isTerminating, err := v.isPVCTerminating(pvcName, pvcNamespace)
 	if err != nil {
 		l.Error(err, "Failed to check if PVC is terminating")
 		return nil, err
 	}
 	if isTerminating {
-		l.Info("PVC is terminating, creating temporary PVC and deleting ReplicationSource")
+		l.Info("PVC is terminating, creating temporary PVC")
 
 		// Create temporary PVC from terminating PVC
 		if err := v.createTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
@@ -111,10 +111,50 @@ func (v *VSHandler) ReconcileRD(
 			return nil, err
 		}
 
-		// Delete the RS
-		if err := v.DeleteRS(pvcName); err != nil {
-			l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
-			return nil, err
+		// Check if VGR has annotation to run final sync
+		runFinalSync := false
+		if v.owner != nil {
+			annotations := v.owner.GetAnnotations()
+			if annotations != nil && annotations["ramendr.openshift.io/run-final-sync"] == "true" {
+				runFinalSync = true
+				l.Info("VGR has run-final-sync annotation, updating RS for final sync")
+			}
+		}
+
+		if runFinalSync {
+			// Update the existing RS to point to temporary PVC for final sync
+			tmpPVCName := pvcName + "-tmp"
+			rsName := getReplicationSourceName(pvcName)
+			
+			rs := &volsyncv1alpha1.ReplicationSource{}
+			err := v.client.Get(v.ctx, types.NamespacedName{
+				Name:      rsName,
+				Namespace: pvcNamespace,
+			}, rs)
+			if err != nil {
+				l.Error(err, "Failed to get ReplicationSource for final sync update")
+				return nil, err
+			}
+
+			// Update RS to use temporary PVC and trigger final sync
+			rs.Spec.Paused = false
+			rs.Spec.SourcePVC = tmpPVCName
+			rs.Spec.Trigger = &volsyncv1alpha1.ReplicationSourceTriggerSpec{
+				Manual: "vgr-final-sync",
+			}
+
+			if err := v.client.Update(v.ctx, rs); err != nil {
+				l.Error(err, "Failed to update ReplicationSource for final sync")
+				return nil, err
+			}
+
+			l.Info("Updated ReplicationSource for final sync", "tmpPVC", tmpPVCName, "rsName", rsName)
+		} else {
+			// Delete the RS if not running final sync
+			if err := v.DeleteRS(pvcName); err != nil {
+				l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
+				return nil, err
+			}
 		}
 
 		return nil, nil
@@ -370,20 +410,21 @@ func (v *VSHandler) ReconcileRS(
 	}
 	if isTerminating {
 		l.Info("PVC is terminating, creating temporary PVC and deleting ReplicationSource")
+		return nil, nil
 
 		// Create temporary PVC from terminating PVC
-		if err := v.createTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
-			l.Error(err, "Failed to create temporary PVC for terminating PVC")
-			return nil, err
-		}
+		// if err := v.createTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
+		// 	l.Error(err, "Failed to create temporary PVC for terminating PVC")
+		// 	return nil, err
+		// }
 
-		// Delete the RS
-		if err := v.DeleteRS(pvcName); err != nil {
-			l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
-			return nil, err
-		}
+		// // Delete the RS
+		// if err := v.DeleteRS(pvcName); err != nil {
+		// 	l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
+		// 	return nil, err
+		// }
 
-		return nil, nil
+		// return nil, nil
 	}
 
 	// Validate that the PSK secret exists

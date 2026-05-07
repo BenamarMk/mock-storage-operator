@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
@@ -159,7 +160,7 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 		// Get PSK secret name from parameters or use default
 		pskSecretName := vgrClass.Spec.Parameters["pskSecretName"]
 		if pskSecretName == "" {
-			pskSecretName = "volsync-rsync-tls-" + vgr.Name
+			pskSecretName = "volsync-rsync-tls-secret"
 		}
 
 		// Use Submariner service name for remote address
@@ -312,11 +313,98 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 
 	serviceType := volsync.DefaultRsyncServiceType
 	protectedPVCs := []corev1.LocalObjectReference{}
-	allReady := true
+	allReady := 0
 
 	// Create VolSync handler for checking temporary PVCs
 	vsHandler := volsync.NewVSHandler(ctx, r.Client, logger, vgr, defaultSchedulingInterval)
 
+	// Check if VGR has annotation to run final sync
+	runFinalSync := false
+	if vgr.Annotations != nil && vgr.Annotations["ramendr.openshift.io/run-final-sync"] == "true" {
+		runFinalSync = true
+		logger.Info("VGR has run-final-sync annotation set to true")
+	}
+
+	// Track final sync completion for all PVCs
+	finalSyncComplete := true
+	finalSyncPVCs := []string{}
+	stop := false
+
+	if runFinalSync {
+		// Check each PVC for final sync completion
+		for _, pvc := range pvcList.Items {
+			// Check if there's a temporary PVC (indicates terminating PVC with final sync)
+			hasTempPVC, err := vsHandler.HasTemporaryPVC(pvc.Name, pvc.Namespace)
+			if err != nil {
+				logger.Error(err, "Failed to check for temporary PVC", "pvcName", pvc.Name)
+				return ctrl.Result{}, err
+			}
+
+			logger.Info("Has Temporary PVC?", "hasTempPVC", hasTempPVC)
+			if hasTempPVC {
+				stop = true
+				// Get the ReplicationSource for this PVC (RS name is same as PVC name)
+				rsName := pvc.Name
+				rs := &volsyncv1alpha1.ReplicationSource{}
+				err := r.Get(ctx, types.NamespacedName{Name: rsName, Namespace: pvc.Namespace}, rs)
+				if err != nil {
+					if !errors.IsNotFound(err) {
+						logger.Error(err, "Failed to get ReplicationSource for final sync", "rsName", rsName)
+						return ctrl.Result{}, err
+					}
+					// RS not found yet, still waiting
+					finalSyncPVCs = append(finalSyncPVCs, pvc.Name)
+					finalSyncComplete = false
+					logger.Info("RS is not found", "name", rsName)
+					continue
+				}
+
+				// Check if final sync is complete
+				if !isFinalSyncComplete(rs, logger.WithValues("pvcName", pvc.Name)) {
+					logger.Info("Final sync is NOT complete for PVC", "pvcName", pvc.Name)
+					finalSyncPVCs = append(finalSyncPVCs, pvc.Name)
+					finalSyncComplete = false
+				} else {
+					logger.Info("Final sync complete for PVC", "pvcName", pvc.Name)
+					allReady++
+				}
+			}
+		}
+
+		if stop {
+			// Only set status to secondary if all final syncs are complete (or not running final sync)
+			statusReady := allReady == len(pvcList.Items)
+			if runFinalSync && !finalSyncComplete {
+				statusReady = false
+				logger.Info("Waiting for final sync to complete", "pvcsRunningFinalSync", finalSyncPVCs)
+			}
+
+			// Update status
+			if statusReady {
+				vgr.Status.State = volrep.SecondaryState
+			}
+			vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs
+			vgr.Status.ObservedGeneration = vgr.Generation
+
+			msg := fmt.Sprintf("%d destination(s) ready", len(protectedPVCs))
+			if !statusReady {
+				msg = "waiting for service addresses to be assigned"
+			} else if runFinalSync && !finalSyncComplete {
+				msg = fmt.Sprintf("waiting for final sync to complete on %d PVC(s)", len(finalSyncPVCs))
+			}
+			setCondition(&vgr.Status.Conditions, "Ready", statusReady, "ReplicationDestinationsReady", msg, vgr.Generation)
+
+			if err := r.Status().Update(ctx, vgr); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if !statusReady {
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+
+			logger.Info("Running FinalSync complete", "destinations", len(protectedPVCs), "allReady", allReady, "finalSyncComplete", finalSyncComplete)
+		}
+	}
 	// Check for temporary PVCs and restore them if VGR is in secondary state
 	// This handles the case where a PVC was deleted on primary and we need to restore it from temp
 	for _, pvc := range pvcList.Items {
@@ -328,7 +416,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 		}
 
 		logger.Info("Checking if a temporary PVC exists for this PVC", "pvcName", pvc.Name)
-		if hasTempPVC {
+		if hasTempPVC && !runFinalSync {
 			logger.Info("Found temporary PVC, restoring original PVC", "pvcName", pvc.Name)
 			if err := vsHandler.RestorePVCFromTemporary(pvc.Name, pvc.Namespace); err != nil {
 				logger.Error(err, "Failed to restore PVC from temporary", "pvcName", pvc.Name)
@@ -338,6 +426,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 		}
 	}
 
+	notAllReady := false
 	for _, pvc := range pvcList.Items {
 		if pvc.Status.Phase == corev1.ClaimLost {
 			if pvc.Annotations != nil {
@@ -373,7 +462,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 			storageClassName = *pvc.Spec.StorageClassName
 		}
 
-		logger.V(1).Info("Protecting DST PVC", "pvc.metadata", pvc.ObjectMeta)
+		logger.V(1).Info("Protecting DST PVC", "pvc.labels", pvc.Labels)
 
 		// Use VolSync handler to reconcile ReplicationDestination
 		rd, err := vsHandler.ReconcileRD(
@@ -392,7 +481,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 
 		if rd == nil {
 			// RD not ready yet
-			allReady = false
+			notAllReady = true
 			continue
 		}
 
@@ -409,26 +498,25 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 		}
 	}
 
+	if notAllReady {
+		logger.Info("Not all RDs ready")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
 	// Update status
 	vgr.Status.State = volrep.SecondaryState
 	vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs
 	vgr.Status.ObservedGeneration = vgr.Generation
 
 	msg := fmt.Sprintf("%d destination(s) ready", len(protectedPVCs))
-	if !allReady {
-		msg = "waiting for service addresses to be assigned"
-	}
-	setCondition(&vgr.Status.Conditions, "Ready", allReady, "ReplicationDestinationsReady", msg, vgr.Generation)
+	
+	setCondition(&vgr.Status.Conditions, "Ready", notAllReady, "ReplicationDestinationsReady", msg, vgr.Generation)
 
 	if err := r.Status().Update(ctx, vgr); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Secondary reconcile complete", "destinations", len(protectedPVCs), "allReady", allReady)
+	logger.Info("Secondary reconcile complete", "destinations", len(protectedPVCs), "allReady", allReady, "finalSyncComplete", finalSyncComplete)
 
-	if !allReady {
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
@@ -486,6 +574,16 @@ func (r *VolumeGroupReplicationReconciler) reconcileDelete(
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
+
+// isFinalSyncComplete checks if the ReplicationSource has completed final sync
+func isFinalSyncComplete(replicationSource *volsyncv1alpha1.ReplicationSource, log logr.Logger) bool {
+	if replicationSource.Status == nil || replicationSource.Status.LastManualSync != "vgr-final-sync" {
+		log.V(1).Info("ReplicationSource running final sync - waiting for status ...")
+		return false
+	}
+	log.V(1).Info("ReplicationSource final sync complete")
+	return true
+}
 
 func isVolSyncOwned(pvc *corev1.PersistentVolumeClaim) bool {
 	// Check if PVC was created by VolSync using the standard Kubernetes label
