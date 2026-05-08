@@ -92,12 +92,18 @@ func (v *VSHandler) ReconcileRD(
 	l := v.log.WithValues("pvcName", pvcName)
 
 	if strings.HasSuffix(pvcName, "-tmp") {
-		l.Info("Skipping ReplicationDestination reconcile for temporary PVC by name")
+		l.Info("Skipping ReplicationDestination reconcile for temporary PVC and ensure RS is deleted")
+		// Delete the RS
+		if err := v.DeleteRS(pvcName); err != nil {
+			l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
+			return nil, err
+		}
+
 		return nil, nil
 	}
 
-	// Check if PVC is terminating - if so, create temporary PVC and handle RS
-	isTerminating, err := v.isPVCTerminating(pvcName, pvcNamespace)
+	// Check if PVC is terminating - if so, create temporary PVC and delete the RS
+	isTerminating, err := IsPVCTerminating(v.ctx, v.client, pvcName, pvcNamespace)
 	if err != nil {
 		l.Error(err, "Failed to check if PVC is terminating")
 		return nil, err
@@ -106,55 +112,9 @@ func (v *VSHandler) ReconcileRD(
 		l.Info("PVC is terminating, creating temporary PVC")
 
 		// Create temporary PVC from terminating PVC
-		if err := v.createTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
+		if err := v.CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
 			l.Error(err, "Failed to create temporary PVC for terminating PVC")
 			return nil, err
-		}
-
-		// Check if VGR has annotation to run final sync
-		runFinalSync := false
-		if v.owner != nil {
-			annotations := v.owner.GetAnnotations()
-			if annotations != nil && annotations["ramendr.openshift.io/run-final-sync"] == "true" {
-				runFinalSync = true
-				l.Info("VGR has run-final-sync annotation, updating RS for final sync")
-			}
-		}
-
-		if runFinalSync {
-			// Update the existing RS to point to temporary PVC for final sync
-			tmpPVCName := pvcName + "-tmp"
-			rsName := getReplicationSourceName(pvcName)
-			
-			rs := &volsyncv1alpha1.ReplicationSource{}
-			err := v.client.Get(v.ctx, types.NamespacedName{
-				Name:      rsName,
-				Namespace: pvcNamespace,
-			}, rs)
-			if err != nil {
-				l.Error(err, "Failed to get ReplicationSource for final sync update")
-				return nil, err
-			}
-
-			// Update RS to use temporary PVC and trigger final sync
-			rs.Spec.Paused = false
-			rs.Spec.SourcePVC = tmpPVCName
-			rs.Spec.Trigger = &volsyncv1alpha1.ReplicationSourceTriggerSpec{
-				Manual: "vgr-final-sync",
-			}
-
-			if err := v.client.Update(v.ctx, rs); err != nil {
-				l.Error(err, "Failed to update ReplicationSource for final sync")
-				return nil, err
-			}
-
-			l.Info("Updated ReplicationSource for final sync", "tmpPVC", tmpPVCName, "rsName", rsName)
-		} else {
-			// Delete the RS if not running final sync
-			if err := v.DeleteRS(pvcName); err != nil {
-				l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
-				return nil, err
-			}
 		}
 
 		return nil, nil
@@ -403,7 +363,7 @@ func (v *VSHandler) ReconcileRS(
 	}
 
 	// Check if PVC is terminating - if so, create temporary PVC and delete the RS
-	isTerminating, err := v.isPVCTerminating(pvcName, pvcNamespace)
+	isTerminating, err := IsPVCTerminating(v.ctx, v.client, pvcName, pvcNamespace)
 	if err != nil {
 		l.Error(err, "Failed to check if PVC is terminating")
 		return nil, err
@@ -413,7 +373,7 @@ func (v *VSHandler) ReconcileRS(
 		return nil, nil
 
 		// Create temporary PVC from terminating PVC
-		// if err := v.createTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
+		// if err := v.CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
 		// 	l.Error(err, "Failed to create temporary PVC for terminating PVC")
 		// 	return nil, err
 		// }
@@ -474,7 +434,7 @@ func (v *VSHandler) createOrUpdateRS(
 
 	rs := &volsyncv1alpha1.ReplicationSource{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      getReplicationSourceName(pvcName),
+			Name:      GetReplicationSourceName(pvcName),
 			Namespace: pvcNamespace,
 		},
 	}
@@ -559,7 +519,7 @@ func (v *VSHandler) DeleteRS(pvcName string) error {
 	for i := range currentRSListByOwner.Items {
 		rs := currentRSListByOwner.Items[i]
 
-		if rs.GetName() == getReplicationSourceName(pvcName) {
+		if rs.GetName() == GetReplicationSourceName(pvcName) {
 			if err := v.client.Delete(v.ctx, &rs); err != nil {
 				v.log.Error(err, "Error cleaning up ReplicationSource", "name", rs.GetName())
 			} else {
@@ -858,8 +818,8 @@ func getReplicationDestinationName(pvcName string) string {
 	return pvcName // Use PVC name as name of ReplicationDestination
 }
 
-// getReplicationSourceName returns the name for a ReplicationSource
-func getReplicationSourceName(pvcName string) string {
+// GetReplicationSourceName returns the name for a ReplicationSource
+func GetReplicationSourceName(pvcName string) string {
 	return pvcName // Use PVC name as name of ReplicationSource
 }
 
@@ -943,9 +903,9 @@ func (v *VSHandler) removeFinalizerFromPVC(pvcName, pvcNamespace string) error {
 }
 
 // isPVCTerminating checks if a PVC is in Terminating status (has DeletionTimestamp set)
-func (v *VSHandler) isPVCTerminating(pvcName, pvcNamespace string) (bool, error) {
+func IsPVCTerminating(ctx context.Context, c client.Client, pvcName, pvcNamespace string) (bool, error) {
 	pvc := &corev1.PersistentVolumeClaim{}
-	err := v.client.Get(v.ctx, types.NamespacedName{
+	err := c.Get(ctx, types.NamespacedName{
 		Name:      pvcName,
 		Namespace: pvcNamespace,
 	}, pvc)
@@ -985,9 +945,9 @@ func (v *VSHandler) getPVFromPVC(pvcName, pvcNamespace string) (*corev1.Persiste
 	return pv, nil
 }
 
-// createTemporaryPVCFromTerminating creates a temporary PVC from a terminating PVC
+// CreateTemporaryPVCFromTerminating creates a temporary PVC from a terminating PVC
 // and updates the PV claimRef to point to the temporary PVC
-func (v *VSHandler) createTemporaryPVCFromTerminating(pvcName, pvcNamespace string) error {
+func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace string) error {
 	l := v.log.WithValues("pvcName", pvcName, "namespace", pvcNamespace)
 
 	// Get the terminating PVC
