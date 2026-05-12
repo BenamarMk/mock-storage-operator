@@ -6,6 +6,7 @@ import (
 
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,6 +30,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(volrep.AddToScheme(scheme))
 	utilruntime.Must(volsyncv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(ramendrv1alpha1.AddToScheme(scheme))
 }
 
 // getEnvOrDefault returns the value of an environment variable or a default value if not set

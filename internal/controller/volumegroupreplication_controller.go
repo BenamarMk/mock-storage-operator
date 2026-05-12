@@ -9,6 +9,7 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -16,9 +17,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -39,6 +45,7 @@ type VolumeGroupReplicationReconciler struct {
 // +kubebuilder:rbac:groups=replication.storage.openshift.io,resources=volumegroupreplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=replication.storage.openshift.io,resources=volumegroupreplications/finalizers,verbs=update
 // +kubebuilder:rbac:groups=replication.storage.openshift.io,resources=volumegroupreplicationclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ramendr.openshift.io,resources=volumereplicationgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=volsync.backube,resources=replicationdestinations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -47,14 +54,52 @@ type VolumeGroupReplicationReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=multicluster.x-k8s.io,resources=serviceexports,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+
+// isPVCInUse checks if a PVC is currently being used by any pod
+func (r *VolumeGroupReplicationReconciler) isPVCInUse(ctx context.Context, namespace, pvcName string) (bool, error) {
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+		return false, fmt.Errorf("listing pods: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.PersistentVolumeClaim != nil &&
+				volume.PersistentVolumeClaim.ClaimName == pvcName {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
 
 func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	logger.V(1).Info("Reconciling VolumeGroupReplication", "volumeGroupReplication", req.NamespacedName) // controller/volumegroupreplication_controller.go"
+	logger.V(1).Info("Reconciling VolumeGroupReplication", "volumeGroupReplication", req.NamespacedName)
 	vgr := &volrep.VolumeGroupReplication{}
 	if err := r.Get(ctx, req.NamespacedName, vgr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Check if there's a VRG in the same namespace
+	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
+	if err := r.List(ctx, vrgList, client.InNamespace(req.Namespace)); err != nil {
+		logger.V(1).Info("Failed to list VRGs, continuing without VRG check", "error", err)
+	} else if len(vrgList.Items) > 0 {
+		// If we're reconciling as Primary but VRG replicationState is secondary, skip reconciliation
+		if vgr.Spec.ReplicationState == volrep.Primary {
+			for _, vrg := range vrgList.Items {
+				if vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary {
+					logger.Info("Skipping reconciliation: VGR is Primary but VRG is Secondary",
+						"vgrName", vgr.Name,
+						"vrgName", vrg.Name,
+						"vrgReplicationState", vrg.Spec.ReplicationState)
+					return ctrl.Result{}, nil
+				}
+			}
+		}
 	}
 
 	// Check if this VGR is for our provisioner
@@ -363,9 +408,29 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 				logger.Info("PVC is terminating, creating temporary PVC")
 
 				// Create temporary PVC from terminating PVC
-				if err := vsHandler.CreateTemporaryPVCFromTerminating(pvc.Name, pvc.Namespace); err != nil {
+				if err := vsHandler.CreateTemporaryPVCFromTerminating(pvc.Name, pvc.Namespace, false); err != nil {
 					logger.Error(err, "Failed to create temporary PVC for terminating PVC")
 					return ctrl.Result{}, err
+				}
+
+				// Pause the ReplicationSource for the main PVC
+				rsName := pvc.Name
+				rs := &volsyncv1alpha1.ReplicationSource{}
+				if err := r.Get(ctx, types.NamespacedName{Name: rsName, Namespace: pvc.Namespace}, rs); err != nil {
+					logger.Error(err, "Failed to get ReplicationSource to pause", "rsName", rsName)
+					return ctrl.Result{}, err
+				}
+
+				// Only update if not already paused
+				if !rs.Spec.Paused {
+					rs.Spec.Paused = true
+					if err := r.Update(ctx, rs); err != nil {
+						logger.Error(err, "Failed to pause ReplicationSource for main PVC", "rsName", rsName)
+						return ctrl.Result{}, err
+					}
+					logger.Info("Paused ReplicationSource for main PVC", "rsName", rsName)
+				} else {
+					logger.Info("ReplicationSource already paused for main PVC", "rsName", rsName)
 				}
 
 				pvcsInTerminating = append(pvcsInTerminating, pvc.Name)
@@ -390,10 +455,23 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 
 			if hasTempPVC {
 				checkResult = true
+				
+				// Check if the main PVC is still in use before proceeding
+				inUse, err := r.isPVCInUse(ctx, pvc.Namespace, pvc.Name)
+				if err != nil {
+					logger.Error(err, "Failed to check if PVC is in use", "pvcName", pvc.Name)
+					return ctrl.Result{}, err
+				}
+				
+				if inUse {
+					logger.Info("PVC is still in use, waiting before updating RS", "pvcName", pvc.Name)
+					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				}
+				
 				// Get the ReplicationSource for this PVC (RS name is same as PVC name)
 				rsName := pvc.Name
 				rs := &volsyncv1alpha1.ReplicationSource{}
-				err := r.Get(ctx, types.NamespacedName{Name: rsName, Namespace: pvc.Namespace}, rs)
+				err = r.Get(ctx, types.NamespacedName{Name: rsName, Namespace: pvc.Namespace}, rs)
 				if err != nil {
 					logger.Error(err, "Failed to get ReplicationSource for final sync", "rsName", rsName)
 					return ctrl.Result{}, err
@@ -663,9 +741,57 @@ func setCondition(conditions *[]metav1.Condition, condType string, status bool, 
 }
 
 func (r *VolumeGroupReplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Create a predicate that only triggers on VRG replicationState changes
+	vrgPredicate := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return true // Trigger on create
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldVRG, oldOk := e.ObjectOld.(*ramendrv1alpha1.VolumeReplicationGroup)
+			newVRG, newOk := e.ObjectNew.(*ramendrv1alpha1.VolumeReplicationGroup)
+			
+			if !oldOk || !newOk {
+				return false
+			}
+			
+			// Only trigger if replicationState changed
+			return oldVRG.Spec.ReplicationState != newVRG.Spec.ReplicationState
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return false // Don't trigger on delete
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return false
+		},
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&volrep.VolumeGroupReplication{}).
+		Watches(&ramendrv1alpha1.VolumeReplicationGroup{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				return r.vrgToVGRRequests(ctx, obj)
+			}),
+			builder.WithPredicates(vrgPredicate)).
 		Complete(r)
+}
+
+// vrgToVGRRequests maps VRG events to VGR reconcile requests
+func (r *VolumeGroupReplicationReconciler) vrgToVGRRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	vgrList := &volrep.VolumeGroupReplicationList{}
+	if err := r.List(ctx, vgrList, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(vgrList.Items))
+	for _, vgr := range vgrList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      vgr.Name,
+				Namespace: vgr.Namespace,
+			},
+		})
+	}
+	return requests
 }
 
 // Made with Bob

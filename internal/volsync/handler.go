@@ -112,7 +112,7 @@ func (v *VSHandler) ReconcileRD(
 		l.Info("PVC is terminating, creating temporary PVC")
 
 		// Create temporary PVC from terminating PVC
-		if err := v.CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace); err != nil {
+		if err := v.CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace, true); err != nil {
 			l.Error(err, "Failed to create temporary PVC for terminating PVC")
 			return nil, err
 		}
@@ -947,7 +947,7 @@ func (v *VSHandler) getPVFromPVC(pvcName, pvcNamespace string) (*corev1.Persiste
 
 // CreateTemporaryPVCFromTerminating creates a temporary PVC from a terminating PVC
 // and updates the PV claimRef to point to the temporary PVC
-func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace string) error {
+func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace string, rmFinalizer bool) error {
 	l := v.log.WithValues("pvcName", pvcName, "namespace", pvcNamespace)
 
 	// Get the terminating PVC
@@ -1007,30 +1007,48 @@ func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace stri
 		},
 	}
 
-	// Create the temporary PVC
-	err = v.client.Create(v.ctx, tmpPVC)
-	if err != nil && !kerrors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create temporary PVC: %w", err)
-	}
-
-	l.Info("Created temporary PVC", "tmpPVCName", tmpPVCName)
-
-	// Update PV claimRef to point to the temporary PVC
-	// Remove resourceVersion and UID from claimRef
-	pv.Spec.ClaimRef = &corev1.ObjectReference{
-		Kind:       "PersistentVolumeClaim",
-		Namespace:  pvcNamespace,
-		Name:       tmpPVCName,
-		APIVersion: "v1",
-	}
-
-	err = v.client.Update(v.ctx, pv)
+	// Check if temporary PVC already exists
+	existingTmpPVC := &corev1.PersistentVolumeClaim{}
+	err = v.client.Get(v.ctx, types.NamespacedName{Name: tmpPVCName, Namespace: pvcNamespace}, existingTmpPVC)
 	if err != nil {
-		return fmt.Errorf("failed to update PV claimRef: %w", err)
+		if kerrors.IsNotFound(err) {
+			// Create the temporary PVC only if it doesn't exist
+			err = v.client.Create(v.ctx, tmpPVC)
+			if err != nil {
+				return fmt.Errorf("failed to create temporary PVC: %w", err)
+			}
+			l.Info("Created temporary PVC", "tmpPVCName", tmpPVCName)
+		} else {
+			return fmt.Errorf("failed to check for existing temporary PVC: %w", err)
+		}
+	} else {
+		l.Info("Temporary PVC already exists", "tmpPVCName", tmpPVCName)
 	}
 
-	l.Info("Updated PV claimRef to point to temporary PVC", "pvName", pv.Name, "tmpPVCName", tmpPVCName)
+	// Update PV claimRef to point to the temporary PVC only if it doesn't already
+	if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != tmpPVCName || pv.Spec.ClaimRef.Namespace != pvcNamespace {
+		// Remove resourceVersion and UID from claimRef
+		pv.Spec.ClaimRef = &corev1.ObjectReference{
+			Kind:       "PersistentVolumeClaim",
+			Namespace:  pvcNamespace,
+			Name:       tmpPVCName,
+			APIVersion: "v1",
+		}
 
+		err = v.client.Update(v.ctx, pv)
+		if err != nil {
+			return fmt.Errorf("failed to update PV claimRef: %w", err)
+		}
+
+		l.Info("Updated PV claimRef to point to temporary PVC", "pvName", pv.Name, "tmpPVCName", tmpPVCName)
+	} else {
+		l.Info("PV claimRef already points to temporary PVC", "pvName", pv.Name, "tmpPVCName", tmpPVCName)
+	}
+
+	if !rmFinalizer {
+		l.Info("Finalizer removal not required", "pvcName", pvcName)
+		return nil
+	}
 	// Remove finalizer from the original terminating PVC
 	err = v.removeFinalizerFromPVC(pvcName, pvcNamespace)
 	if err != nil {

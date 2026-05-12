@@ -17,6 +17,10 @@ rules:
   - apiGroups: [replication.storage.openshift.io]
     resources: [volumegroupreplicationclasses]
     verbs: [get, list, watch]
+  # VolumeReplicationGroup (Ramen)
+  - apiGroups: [ramendr.openshift.io]
+    resources: [volumereplicationgroups]
+    verbs: [get, list, watch]
   # VolSync resources
   - apiGroups: [volsync.backube]
     resources: [replicationsources, replicationdestinations]
@@ -44,6 +48,10 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
+  # Pods (read-only — we check if PVCs are in use)
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
   # Leader election
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
