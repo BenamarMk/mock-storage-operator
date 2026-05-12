@@ -9,8 +9,8 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
-	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,25 +83,6 @@ func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Check if there's a VRG in the same namespace
-	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
-	if err := r.List(ctx, vrgList, client.InNamespace(req.Namespace)); err != nil {
-		logger.V(1).Info("Failed to list VRGs, continuing without VRG check", "error", err)
-	} else if len(vrgList.Items) > 0 {
-		// If we're reconciling as Primary but VRG replicationState is secondary, skip reconciliation
-		if vgr.Spec.ReplicationState == volrep.Primary {
-			for _, vrg := range vrgList.Items {
-				if vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary {
-					logger.Info("Skipping reconciliation: VGR is Primary but VRG is Secondary",
-						"vgrName", vgr.Name,
-						"vrgName", vrg.Name,
-						"vrgReplicationState", vrg.Spec.ReplicationState)
-					return ctrl.Result{}, nil
-				}
-			}
-		}
-	}
-
 	// Check if this VGR is for our provisioner
 	vgrClass := &volrep.VolumeGroupReplicationClass{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vgr.Spec.VolumeGroupReplicationClassName}, vgrClass); err != nil {
@@ -137,16 +118,24 @@ func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ct
 
 	logger.V(1).Info("Reconciling", "as", vgr.Spec.ReplicationState)
 	// Reconcile based on replication state
+	var result ctrl.Result
+	var err error
 	switch vgr.Spec.ReplicationState {
 	case volrep.Primary:
-		return r.reconcilePrimary(ctx, logger, vgr, vgrClass)
+		result, err = r.reconcilePrimary(ctx, logger, vgr, vgrClass)
 	case volrep.Secondary:
-		return r.reconcileSecondary(ctx, logger, vgr, vgrClass)
+		result, err = r.reconcileSecondary(ctx, logger, vgr, vgrClass)
 	default:
 		logger.Error(fmt.Errorf("unknown replication state %q", vgr.Spec.ReplicationState),
 			"spec.replicationState must be primary, secondary, or resync")
 		return ctrl.Result{}, nil
 	}
+
+	if err := r.Status().Update(ctx, vgr); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return result, err
 }
 
 // ── PRIMARY ──────────────────────────────────────────────────────────────────
@@ -168,6 +157,43 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 	sel, err := metav1.LabelSelectorAsSelector(vgr.Spec.Source.Selector)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid pvcSelector: %w", err)
+	}
+
+	// Check if there's a VRG in the same namespace
+	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
+	if err := r.List(ctx, vrgList, client.InNamespace(vgr.Namespace)); err != nil {
+		logger.V(1).Info("Failed to list VRGs, continuing without VRG check", "error", err)
+	} else if len(vrgList.Items) > 0 {
+		// If we're reconciling as Primary but VRG replicationState is secondary, pause all RS and skip reconciliation
+		for _, vrg := range vrgList.Items {
+			if vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary {
+				logger.Info("VGR is Primary but VRG is Secondary, pausing all ReplicationSources",
+					"vgrName", vgr.Name,
+					"vrgName", vrg.Name,
+					"vrgReplicationState", vrg.Spec.ReplicationState)
+
+				// Pause all existing ReplicationSources
+				rsList := &volsyncv1alpha1.ReplicationSourceList{}
+				if err := r.List(ctx, rsList, client.InNamespace(vgr.Namespace)); err != nil {
+					logger.Error(err, "Failed to list ReplicationSources")
+					return ctrl.Result{}, err
+				}
+
+				for i := range rsList.Items {
+					rs := &rsList.Items[i]
+					if !rs.Spec.Paused {
+						rs.Spec.Paused = true
+						if err := r.Update(ctx, rs); err != nil {
+							logger.Error(err, "Failed to pause ReplicationSource", "rsName", rs.Name)
+							return ctrl.Result{}, err
+						}
+						logger.Info("Paused ReplicationSource", "rsName", rs.Name)
+					}
+				}
+
+				return ctrl.Result{}, nil
+			}
+		}
 	}
 
 	pvcList := &corev1.PersistentVolumeClaimList{}
@@ -291,10 +317,6 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 		"volume group is replicating: local group is primary",
 		vgr.Generation)
 
-	if err := r.Status().Update(ctx, vgr); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
 
@@ -389,11 +411,11 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 	checkResult := false
 
 	if runFinalSync && vgr.Status.State != volrep.SecondaryState {
-		// Set Resyncing to true during final sync
-		setCondition(&vgr.Status.Conditions, "Resyncing", true, "FinalSync", "Running final sync before demotion", vgr.Generation)
-		if err := r.Status().Update(ctx, vgr); err != nil {
-			return ctrl.Result{}, err
-		}
+		setCondition(&vgr.Status.Conditions, "Completed", false,
+			"FinalSync",
+			"RunningFinalSync",
+			vgr.Generation)
+
 		// Check each PVC for final sync completion
 		pvcsInTerminating := []string{}
 		pvcsToProtect := 0
@@ -473,19 +495,19 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 
 			if hasTempPVC {
 				checkResult = true
-				
+
 				// Check if the main PVC is still in use before proceeding
 				inUse, err := r.isPVCInUse(ctx, pvc.Namespace, pvc.Name)
 				if err != nil {
 					logger.Error(err, "Failed to check if PVC is in use", "pvcName", pvc.Name)
 					return ctrl.Result{}, err
 				}
-				
+
 				if inUse {
 					logger.Info("PVC is still in use, waiting before updating RS", "pvcName", pvc.Name)
 					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 				}
-				
+
 				// Get the ReplicationSource for this PVC (RS name is same as PVC name)
 				rsName := pvc.Name
 				rs := &volsyncv1alpha1.ReplicationSource{}
@@ -685,10 +707,6 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 			vgr.Generation)
 	}
 
-	if err := r.Status().Update(ctx, vgr); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	logger.Info("Secondary reconcile complete", "destinations", len(protectedPVCs), "allReady", allReady)
 
 	if !allReady {
@@ -805,11 +823,11 @@ func (r *VolumeGroupReplicationReconciler) SetupWithManager(mgr ctrl.Manager) er
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldVRG, oldOk := e.ObjectOld.(*ramendrv1alpha1.VolumeReplicationGroup)
 			newVRG, newOk := e.ObjectNew.(*ramendrv1alpha1.VolumeReplicationGroup)
-			
+
 			if !oldOk || !newOk {
 				return false
 			}
-			
+
 			// Only trigger if replicationState changed
 			return oldVRG.Spec.ReplicationState != newVRG.Spec.ReplicationState
 		},
