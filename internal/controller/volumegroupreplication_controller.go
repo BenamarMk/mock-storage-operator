@@ -273,9 +273,22 @@ func (r *VolumeGroupReplicationReconciler) reconcilePrimary(
 		"volume group is validated and met all prerequisites",
 		vgr.Generation)
 
-	setCondition(&vgr.Status.Conditions, "Ready", true,
-		"ReplicationDestinationsReady",
-		"RS is created ad ready",
+	// Set Degraded condition (False = healthy)
+	setCondition(&vgr.Status.Conditions, "Degraded", false,
+		"Healthy",
+		"volume group is healthy",
+		vgr.Generation)
+
+	// Set Resyncing condition (False = not resyncing)
+	setCondition(&vgr.Status.Conditions, "Resyncing", false,
+		"NotResyncing",
+		"volume group is not resyncing",
+		vgr.Generation)
+
+	// Set Replicating condition
+	setCondition(&vgr.Status.Conditions, "Replicating", true,
+		"Replicating",
+		"volume group is replicating: local group is primary",
 		vgr.Generation)
 
 	if err := r.Status().Update(ctx, vgr); err != nil {
@@ -376,6 +389,11 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 	checkResult := false
 
 	if runFinalSync && vgr.Status.State != volrep.SecondaryState {
+		// Set Resyncing to true during final sync
+		setCondition(&vgr.Status.Conditions, "Resyncing", true, "FinalSync", "Running final sync before demotion", vgr.Generation)
+		if err := r.Status().Update(ctx, vgr); err != nil {
+			return ctrl.Result{}, err
+		}
 		// Check each PVC for final sync completion
 		pvcsInTerminating := []string{}
 		pvcsToProtect := 0
@@ -492,7 +510,7 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 					return ctrl.Result{}, err
 				}
 
-				logger.Info("Updated ReplicationSource for final sync", "tmpPVC", tmpPVCName, "rsName", rsName)
+				logger.Info("Unpaused ReplicationSource for final sync", "tmpPVC", tmpPVCName, "rsName", rsName)
 
 				// Check if final sync is complete
 				if !isFinalSyncComplete(rs, logger.WithValues("pvcName", pvc.Name)) {
@@ -512,7 +530,8 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 				msg := fmt.Sprintf("Waiting for final sync to complete. PVCs still running final sync %v", finalSyncPVCs)
 				logger.Info(msg)
 
-				setCondition(&vgr.Status.Conditions, "NotReady", statusReady, "ReplicationDestinationsReady", msg, vgr.Generation)
+				// Keep Resyncing true while final sync is in progress
+				setCondition(&vgr.Status.Conditions, "Resyncing", true, "FinalSync", msg, vgr.Generation)
 
 				if err := r.Status().Update(ctx, vgr); err != nil {
 					return ctrl.Result{}, err
@@ -521,6 +540,8 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
 
+			// Final sync complete, set Resyncing to false
+			setCondition(&vgr.Status.Conditions, "Resyncing", false, "NotResyncing", "volume group is not resyncing", vgr.Generation)
 			logger.Info("FinalSync completed for all PVCs. Proceeding to setting up ReplicationDestination", "pvcs", pvcsToProtect)
 		}
 	}
@@ -627,7 +648,42 @@ func (r *VolumeGroupReplicationReconciler) reconcileSecondary(
 	vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs
 	vgr.Status.ObservedGeneration = vgr.Generation
 
-	setCondition(&vgr.Status.Conditions, "Ready", allReady, "ReplicationDestinationsReady", msg, vgr.Generation)
+	// Set Completed condition for secondary
+	setCondition(&vgr.Status.Conditions, "Completed", allReady,
+		"Demoted",
+		"volume group is demoted to secondary and ready to be promoted",
+		vgr.Generation)
+
+	// Set Validated condition
+	setCondition(&vgr.Status.Conditions, "Validated", true,
+		"PrerequisiteMet",
+		"volume group is validated and met all prerequisites",
+		vgr.Generation)
+
+	// Set Degraded condition (False = healthy)
+	setCondition(&vgr.Status.Conditions, "Degraded", false,
+		"Healthy",
+		"volume group is healthy",
+		vgr.Generation)
+
+	// Set Resyncing condition (False = not resyncing on secondary)
+	setCondition(&vgr.Status.Conditions, "Resyncing", false,
+		"NotResyncing",
+		"volume group is not resyncing",
+		vgr.Generation)
+
+	// Set Replicating condition for secondary
+	if allReady {
+		setCondition(&vgr.Status.Conditions, "Replicating", true,
+			"Replicating",
+			"volume group is replicating: local group is secondary",
+			vgr.Generation)
+	} else {
+		setCondition(&vgr.Status.Conditions, "Replicating", false,
+			"NotReplicating",
+			msg,
+			vgr.Generation)
+	}
 
 	if err := r.Status().Update(ctx, vgr); err != nil {
 		return ctrl.Result{}, err

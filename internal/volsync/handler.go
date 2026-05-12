@@ -1131,10 +1131,11 @@ func (v *VSHandler) RestorePVCFromTemporary(pvcName, pvcNamespace string) error 
 				return fmt.Errorf("failed to remove finalizers from terminating PVC: %w", err)
 			}
 			l.Info("Removed finalizers from terminating PVC before restore", "pvcName", pvcName)
+			return fmt.Errorf("waiting for the PVC to go away: %s", pvcName)
 		}
 
 		l.Info("Main PVC is still terminating, skipping restore create until deletion completes", "pvcName", pvcName)
-		return nil
+		return fmt.Errorf("no Finalizers. But PVC still exists. Waiting for the PVC to go away: %s", pvcName)
 	}
 
 	// Create the new PVC with the original name from the temporary PVC
