@@ -53,14 +53,16 @@ func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
 
 	// Check if no VRGs exist
 	if len(vrgList.Items) == 0 {
+		h.logger.V(1).Info("VRG list is empty, skipping final sync check")
 		return false
 	}
 
 	// Check if any VRG meets the final sync criteria
 	for _, vrg := range vrgList.Items {
+		h.logger.V(1).Info("Checking if VRG requires final sync", "vrgName", vrg.Name)
 		if vrg.Spec.Action == ramendrv1alpha1.VRGActionRelocate &&
 			vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary &&
-			vrg.Status.State != ramendrv1alpha1.SecondaryState {
+			h.vgr.Status.State != volrep.SecondaryState {
 			h.logger.Info("Final sync required based on VRG state",
 				"vrgName", vrg.Name,
 				"action", vrg.Spec.Action,
@@ -71,6 +73,38 @@ func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
 	}
 
 	return false
+}
+
+// areAllRSFinalSyncsComplete checks if all ReplicationSources in the namespace have completed final sync
+func (h *FinalSyncHandler) areAllRSFinalSyncsComplete() (bool, error) {
+	// List all ReplicationSources in the namespace
+	rsList := &volsyncv1alpha1.ReplicationSourceList{}
+	if err := h.client.List(h.ctx, rsList, client.InNamespace(h.vgr.Namespace)); err != nil {
+		h.logger.Error(err, "Failed to list ReplicationSources for final sync check")
+		return false, err
+	}
+
+	// Check if there are any ReplicationSources
+	if len(rsList.Items) == 0 {
+		h.logger.V(1).Info("No ReplicationSources found in namespace")
+		return true, nil
+	}
+
+	// Check each RS to see if final sync is complete
+	allComplete := true
+	for i := range rsList.Items {
+		rs := &rsList.Items[i]
+		if !isFinalSyncComplete(rs, h.logger) {
+			h.logger.V(1).Info("ReplicationSource final sync not complete", "rsName", rs.Name)
+			allComplete = false
+		}
+	}
+
+	if allComplete {
+		h.logger.Info("All ReplicationSources have completed final sync", "count", len(rsList.Items))
+	}
+
+	return allComplete, nil
 }
 
 // FinalSyncResult contains the result of final sync processing

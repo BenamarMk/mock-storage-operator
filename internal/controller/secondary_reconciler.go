@@ -77,7 +77,10 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 
 	// Phase 3: Handle final sync if needed
 	if result, err := r.handleFinalSync(pvcList); err != nil || result != nil {
-		return *result, err
+		if result != nil {
+			return *result, err
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Phase 4: Restore temporary PVCs
@@ -176,7 +179,7 @@ func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeCl
 		return nil, nil
 	}
 
-	r.logger.Info("VGR has run-final-sync annotation set to true")
+	r.logger.Info("VGR requires final sync")
 
 	result, err := finalSyncHandler.ProcessFinalSync(pvcList)
 	if err != nil {
