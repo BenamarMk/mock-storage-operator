@@ -9,6 +9,7 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -41,12 +42,35 @@ func NewFinalSyncHandler(
 	}
 }
 
-// ShouldRunFinalSync checks if final sync should be executed
+// ShouldRunFinalSync checks if final sync should be executed by checking VRG state
 func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
-	if h.vgr.Annotations == nil {
+	// List VRGs in the namespace
+	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
+	if err := h.client.List(h.ctx, vrgList, client.InNamespace(h.vgr.Namespace)); err != nil {
+		h.logger.V(1).Info("Failed to list VRGs, skipping final sync check", "error", err)
 		return false
 	}
-	return h.vgr.Annotations["ramendr.openshift.io/run-final-sync"] == "true"
+
+	// Check if no VRGs exist
+	if len(vrgList.Items) == 0 {
+		return false
+	}
+
+	// Check if any VRG meets the final sync criteria
+	for _, vrg := range vrgList.Items {
+		if vrg.Spec.Action == ramendrv1alpha1.VRGActionRelocate &&
+			vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary &&
+			vrg.Status.State != ramendrv1alpha1.SecondaryState {
+			h.logger.Info("Final sync required based on VRG state",
+				"vrgName", vrg.Name,
+				"action", vrg.Spec.Action,
+				"replicationState", vrg.Spec.ReplicationState,
+				"statusState", vrg.Status.State)
+			return true
+		}
+	}
+
+	return false
 }
 
 // FinalSyncResult contains the result of final sync processing
