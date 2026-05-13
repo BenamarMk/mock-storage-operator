@@ -106,6 +106,8 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 
 // getPVCList retrieves and validates the PVC list
 func (r *SecondaryReconciler) getPVCList() (*corev1.PersistentVolumeClaimList, error) {
+	r.logger.V(1).Info("Getting PVC list based on selector")
+	
 	if r.vgr.Spec.Source.Selector == nil {
 		r.logger.Info("No PVC selector specified")
 		return nil, fmt.Errorf("no PVC selector specified")
@@ -126,6 +128,8 @@ func (r *SecondaryReconciler) getPVCList() (*corev1.PersistentVolumeClaimList, e
 
 // getConfiguration extracts configuration from VGRClass
 func (r *SecondaryReconciler) getConfiguration() *SecondaryConfig {
+	r.logger.V(1).Info("Extracting configuration from VGRClass")
+	
 	config := &SecondaryConfig{
 		SchedulingInterval: "5m",
 		StorageClassName:   "standard",
@@ -164,6 +168,8 @@ func (r *SecondaryReconciler) getConfiguration() *SecondaryConfig {
 
 // handleFinalSync processes final sync if annotation is present
 func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeClaimList) (*ctrl.Result, error) {
+	r.logger.V(1).Info("Checking if final sync should be handled")
+	
 	finalSyncHandler := NewFinalSyncHandler(r.ctx, r.client, r.logger, r.vgr, r.vsHandler)
 
 	if !finalSyncHandler.ShouldRunFinalSync() {
@@ -201,7 +207,7 @@ func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeCl
 
 // restoreTemporaryPVCs restores PVCs from temporary PVCs if they exist
 func (r *SecondaryReconciler) restoreTemporaryPVCs(pvcList *corev1.PersistentVolumeClaimList) error {
-	r.logger.Info("Checking for temporary PVCs to restore")
+	r.logger.V(1).Info("Checking for temporary PVCs to restore")
 
 	for _, pvc := range pvcList.Items {
 		hasTempPVC, err := r.vsHandler.HasTemporaryPVC(pvc.Name, pvc.Namespace)
@@ -228,6 +234,8 @@ func (r *SecondaryReconciler) reconcileReplicationDestinations(
 	pvcList *corev1.PersistentVolumeClaimList,
 	config *SecondaryConfig,
 ) ([]corev1.LocalObjectReference, bool, error) {
+	r.logger.V(1).Info("Reconciling ReplicationDestinations for all PVCs", "pvcCount", len(pvcList.Items))
+	
 	protectedPVCs := []corev1.LocalObjectReference{}
 	allReady := true
 
@@ -266,6 +274,8 @@ func (r *SecondaryReconciler) reconcileReplicationDestinations(
 
 // handleLostPVC handles PVCs in Lost phase
 func (r *SecondaryReconciler) handleLostPVC(pvc *corev1.PersistentVolumeClaim) error {
+	r.logger.V(1).Info("Handling PVC in Lost phase", "pvcName", pvc.Name)
+	
 	if pvc.Annotations == nil {
 		return nil
 	}
@@ -285,6 +295,8 @@ func (r *SecondaryReconciler) handleLostPVC(pvc *corev1.PersistentVolumeClaim) e
 
 // getPVCConfiguration extracts per-PVC configuration
 func (r *SecondaryReconciler) getPVCConfiguration(pvc *corev1.PersistentVolumeClaim, defaultConfig *SecondaryConfig) *PVCConfig {
+	r.logger.V(2).Info("Extracting per-PVC configuration", "pvcName", pvc.Name)
+	
 	// Extract scheduling interval from annotation (default to config value if not set)
 	schedulingInterval := defaultConfig.SchedulingInterval
 	if interval, ok := pvc.Annotations["replication.storage.openshift.io/scheduling-interval"]; ok && interval != "" {
@@ -372,6 +384,8 @@ func (r *SecondaryReconciler) logReplicationDestinationStatus(
 
 // updateStatus updates VGR status and conditions
 func (r *SecondaryReconciler) updateStatus(protectedPVCs []corev1.LocalObjectReference, allReady bool) error {
+	r.logger.V(1).Info("Updating VGR status", "protectedPVCs", len(protectedPVCs), "allReady", allReady)
+	
 	msg := fmt.Sprintf("%d destination(s) ready", len(protectedPVCs))
 	if allReady {
 		r.vgr.Status.State = volrep.SecondaryState
