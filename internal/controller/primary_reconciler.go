@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -152,6 +153,25 @@ func (r *PrimaryReconciler) pauseAllReplicationSources() error {
 				return err
 			}
 			r.logger.Info("Paused ReplicationSource", "rsName", rs.Name)
+
+			// Delete the associated VolSync job
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "volsync-rsync-tls-src-" + rs.Name,
+					Namespace: r.vgr.Namespace,
+				},
+			}
+
+			err := r.client.Delete(r.ctx, job)
+			if client.IgnoreNotFound(err) != nil {
+				r.logger.Error(err, "Failed to delete job after pausing RS", "jobName", job.Name)
+				return err
+			}
+			if err == nil {
+				r.logger.Info("Deleted job after pausing RS", "jobName", job.Name)
+			} else {
+				r.logger.V(1).Info("Job not found, skipping deletion", "jobName", job.Name)
+			}
 		}
 	}
 
