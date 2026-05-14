@@ -9,11 +9,13 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
-	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	batchv1 "k8s.io/api/batch/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // FinalSyncHandler handles final sync operations for VolumeGroupReplication
@@ -76,7 +78,7 @@ func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
 }
 
 // areAllRSFinalSyncsComplete checks if all ReplicationSources in the namespace have completed final sync
-func (h *FinalSyncHandler) areAllRSFinalSyncsComplete() (bool, error) {
+func (h *FinalSyncHandler) AreAllRSFinalSyncsComplete() (bool, error) {
 	// List all ReplicationSources in the namespace
 	rsList := &volsyncv1alpha1.ReplicationSourceList{}
 	if err := h.client.List(h.ctx, rsList, client.InNamespace(h.vgr.Namespace)); err != nil {
@@ -279,7 +281,26 @@ func (h *FinalSyncHandler) pauseReplicationSource(pvcName, namespace string) err
 			h.logger.Error(err, "Failed to pause ReplicationSource for main PVC", "rsName", rsName)
 			return err
 		}
+
 		h.logger.Info("Paused ReplicationSource for main PVC", "rsName", rsName)
+
+		job := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "volsync-rsync-tls-src-" + rsName,
+				Namespace: namespace,
+			},
+		}
+
+		err := h.client.Delete(h.ctx, job)
+		if client.IgnoreNotFound(err) != nil {
+			h.logger.Error(err, "Failed to delete job for final sync", "jobName", job.Name)
+			return err
+		}
+		if err == nil {
+			h.logger.Info("Deleted job for final sync", "jobName", job.Name)
+		} else {
+			h.logger.V(1).Info("Job not found, skipping deletion", "jobName", job.Name)
+		}
 	} else {
 		h.logger.Info("ReplicationSource already paused for main PVC", "rsName", rsName)
 	}

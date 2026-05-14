@@ -109,7 +109,7 @@ func (v *VSHandler) ReconcileRD(
 		return nil, err
 	}
 	if isTerminating {
-		l.Info("PVC is terminating, creating temporary PVC")
+		l.Info("App PVC is terminating, creating temporary PVC", "pvcName", pvcName)
 
 		// Create temporary PVC from terminating PVC
 		if err := v.CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace, true); err != nil {
@@ -631,6 +631,7 @@ func (v *VSHandler) listByOwner(list client.ObjectList) error {
 		return fmt.Errorf("error listing by label (%w)", err)
 	}
 
+	v.log.Info("Found resources by label", "matchLabels", matchLabels, "items", list)
 	return nil
 }
 

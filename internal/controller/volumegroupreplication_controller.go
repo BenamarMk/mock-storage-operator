@@ -111,6 +111,8 @@ func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, nil
 	}
 
+	logger.V(1).Info("Reconciled", "as", vgr.Spec.ReplicationState, "result", result, "error", err)
+	
 	if err := r.Status().Update(ctx, vgr); err != nil {
 		return ctrl.Result{}, err
 	}

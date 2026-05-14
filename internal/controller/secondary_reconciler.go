@@ -88,6 +88,16 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
+	allComplete, err := r.isFinalSyncComplete()
+	if err != nil {
+		r.logger.V(1).Info("Failed to check final sync status", "error", err)
+		return ctrl.Result{}, err
+	}
+
+	if !allComplete {
+		r.logger.V(1).Info("Not all final syncs are complete")
+		return ctrl.Result{}, err
+	}
 	// Phase 5: Reconcile ReplicationDestinations
 	protectedPVCs, allReady, err := r.reconcileReplicationDestinations(pvcList, config)
 	if err != nil {
@@ -179,8 +189,17 @@ func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeCl
 		return nil, nil
 	}
 
-	r.logger.Info("VGR requires final sync")
-
+	r.logger.Info("VGR requires final sync. Check if it already complete")
+	if allComplete, err := finalSyncHandler.AreAllRSFinalSyncsComplete(); err != nil || allComplete {
+		if err != nil {
+			return nil, err
+		}
+		
+		if allComplete {
+			return nil, nil
+		}
+	}
+	
 	result, err := finalSyncHandler.ProcessFinalSync(pvcList)
 	if err != nil {
 		// Check if it's a "waiting" error
@@ -206,6 +225,11 @@ func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeCl
 
 	r.logger.Info("Final sync completed for all PVCs. Proceeding to setting up ReplicationDestination")
 	return nil, nil
+}
+
+func (r *SecondaryReconciler) isFinalSyncComplete() (bool, error) {
+	finalSyncHandler := NewFinalSyncHandler(r.ctx, r.client, r.logger, r.vgr, r.vsHandler)
+	return finalSyncHandler.AreAllRSFinalSyncsComplete()
 }
 
 // restoreTemporaryPVCs restores PVCs from temporary PVCs if they exist
@@ -389,6 +413,15 @@ func (r *SecondaryReconciler) logReplicationDestinationStatus(
 func (r *SecondaryReconciler) updateStatus(protectedPVCs []corev1.LocalObjectReference, allReady bool) error {
 	r.logger.V(1).Info("Updating VGR status", "protectedPVCs", len(protectedPVCs), "allReady", allReady)
 	
+	// If VGR is already in Secondary state, clear all conditions
+	if r.vgr.Status.State == volrep.SecondaryState {
+		r.logger.Info("VGR already in Secondary state, clearing conditions")
+		r.vgr.Status.Conditions = []metav1.Condition{}
+		r.vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs
+		r.vgr.Status.ObservedGeneration = r.vgr.Generation
+		return r.client.Status().Update(r.ctx, r.vgr)
+	}
+
 	msg := fmt.Sprintf("%d destination(s) ready", len(protectedPVCs))
 	if allReady {
 		r.vgr.Status.State = volrep.SecondaryState
