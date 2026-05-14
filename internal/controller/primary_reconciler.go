@@ -8,8 +8,8 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	volrep "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/go-logr/logr"
-	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
+	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -171,6 +171,23 @@ func (r *PrimaryReconciler) pauseAllReplicationSources() error {
 				r.logger.Info("Deleted job after pausing RS", "jobName", job.Name)
 			} else {
 				r.logger.V(1).Info("Job not found, skipping deletion", "jobName", job.Name)
+			}
+
+			// Delete VolSync pods associated with this RS
+			podList := &corev1.PodList{}
+			if err := r.client.List(r.ctx, podList, client.InNamespace(r.vgr.Namespace)); err != nil {
+				r.logger.Error(err, "Failed to list pods for cleanup")
+				return err
+			}
+
+			for _, pod := range podList.Items {
+				if pod.Labels["app.kubernetes.io/created-by"] == "volsync" {
+					if err := r.client.Delete(r.ctx, &pod); err != nil {
+						r.logger.Error(err, "Failed to delete VolSync pod", "podName", pod.Name)
+						return fmt.Errorf("deleting pod %s/%s: %w", pod.Namespace, pod.Name, err)
+					}
+					r.logger.Info("Deleted VolSync pod", "podName", pod.Name)
+				}
 			}
 		}
 	}

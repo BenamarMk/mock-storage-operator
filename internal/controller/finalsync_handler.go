@@ -11,11 +11,11 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/ramendr/mock-storage-operator/internal/volsync"
 	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	batchv1 "k8s.io/api/batch/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // FinalSyncHandler handles final sync operations for VolumeGroupReplication
@@ -197,6 +197,12 @@ func (h *FinalSyncHandler) ProcessFinalSync(pvcList *corev1.PersistentVolumeClai
 
 		if inUse {
 			h.logger.Info("PVC is still in use, waiting before updating RS", "pvcName", pvc.Name)
+
+			// Pause the ReplicationSource for the main PVC
+			if err := h.pauseReplicationSource(pvc.Name, pvc.Namespace); err != nil {
+				return nil, err
+			}
+
 			return nil, fmt.Errorf("PVC %s still in use", pvc.Name)
 		}
 
@@ -253,11 +259,6 @@ func (h *FinalSyncHandler) handleTerminatingPVC(pvc *corev1.PersistentVolumeClai
 	// Create temporary PVC from terminating PVC
 	if err := h.vsHandler.CreateTemporaryPVCFromTerminating(pvc.Name, pvc.Namespace, false); err != nil {
 		h.logger.Error(err, "Failed to create temporary PVC for terminating PVC", "pvcName", pvc.Name)
-		return err
-	}
-
-	// Pause the ReplicationSource for the main PVC
-	if err := h.pauseReplicationSource(pvc.Name, pvc.Namespace); err != nil {
 		return err
 	}
 
@@ -356,6 +357,11 @@ func (h *FinalSyncHandler) isPVCInUse(namespace, pvcName string) (bool, error) {
 		for _, volume := range pod.Spec.Volumes {
 			if volume.PersistentVolumeClaim != nil &&
 				volume.PersistentVolumeClaim.ClaimName == pvcName {
+				if pod.Labels["app.kubernetes.io/created-by"] == "volsync" {
+					if err := h.client.Delete(h.ctx, &pod); err != nil {
+						return false, fmt.Errorf("deleting pod %s/%s: %w", pod.Namespace, pod.Name, err)
+					}
+				}
 				return true, nil
 			}
 		}
