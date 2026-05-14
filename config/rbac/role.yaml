@@ -52,6 +52,10 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
+  # Jobs (delete — we delete VolSync jobs during final sync)
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, delete]
   # Leader election
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
