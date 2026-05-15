@@ -172,23 +172,22 @@ func (r *PrimaryReconciler) pauseAllReplicationSources() error {
 			} else {
 				r.logger.V(1).Info("Job not found, skipping deletion", "jobName", job.Name)
 			}
+		}
+	}
 
-			// Delete VolSync pods associated with this RS
-			podList := &corev1.PodList{}
-			if err := r.client.List(r.ctx, podList, client.InNamespace(r.vgr.Namespace)); err != nil {
-				r.logger.Error(err, "Failed to list pods for cleanup")
-				return err
-			}
+	podList := &corev1.PodList{}
+	if err := r.client.List(r.ctx, podList, client.InNamespace(r.vgr.Namespace)); err != nil {
+		r.logger.Error(err, "Failed to list pods for cleanup")
+		return err
+	}
 
-			for _, pod := range podList.Items {
-				if pod.Labels["app.kubernetes.io/created-by"] == "volsync" {
-					if err := r.client.Delete(r.ctx, &pod); err != nil {
-						r.logger.Error(err, "Failed to delete VolSync pod", "podName", pod.Name)
-						return fmt.Errorf("deleting pod %s/%s: %w", pod.Namespace, pod.Name, err)
-					}
-					r.logger.Info("Deleted VolSync pod", "podName", pod.Name)
-				}
+	for _, pod := range podList.Items {
+		if pod.Labels["app.kubernetes.io/created-by"] == "volsync" {
+			if err := r.client.Delete(r.ctx, &pod); err != nil {
+				r.logger.Error(err, "Failed to delete VolSync pod", "podName", pod.Name)
+				return fmt.Errorf("deleting pod %s/%s: %w", pod.Namespace, pod.Name, err)
 			}
+			r.logger.Info("Deleted VolSync pod", "podName", pod.Name)
 		}
 	}
 

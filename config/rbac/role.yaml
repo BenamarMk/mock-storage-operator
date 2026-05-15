@@ -48,10 +48,10 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
-  # Pods (read-only — we check if PVCs are in use)
+  # Pods (read/delete — we check if PVCs are in use and delete VolSync pods)
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, delete]
   # Jobs (delete — we delete VolSync jobs during final sync)
   - apiGroups: [batch]
     resources: [jobs]
