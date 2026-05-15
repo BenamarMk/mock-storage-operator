@@ -54,7 +54,7 @@ func NewSecondaryReconciler(
 
 // Reconcile orchestrates the secondary reconciliation process
 func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
-	r.logger.V(1).Info("Reconciling VolumeGroupReplication as secondary")
+	r.logger.V(1).Info("Reconciling as secondary")
 
 	// Phase 1: Validate and get PVCs
 	pvcList, err := r.getPVCList()
@@ -119,7 +119,7 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 
 // getPVCList retrieves and validates the PVC list
 func (r *SecondaryReconciler) getPVCList() (*corev1.PersistentVolumeClaimList, error) {
-	r.logger.V(1).Info("Getting PVC list based on selector")
+	r.logger.V(1).Info("Getting PVC list")
 	
 	if r.vgr.Spec.Source.Selector == nil {
 		r.logger.Info("No PVC selector specified")
@@ -181,7 +181,7 @@ func (r *SecondaryReconciler) getConfiguration() *SecondaryConfig {
 
 // handleFinalSync processes final sync if annotation is present
 func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeClaimList) (*ctrl.Result, error) {
-	r.logger.V(1).Info("Checking if final sync should be handled")
+	r.logger.V(1).Info("Checking if final sync should be run")
 	
 	finalSyncHandler := NewFinalSyncHandler(r.ctx, r.client, r.logger, r.vgr, r.vsHandler)
 
@@ -189,7 +189,7 @@ func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeCl
 		return nil, nil
 	}
 
-	r.logger.Info("VGR requires final sync. Check if it already complete")
+	r.logger.Info("VGR requires final sync. Check if it is already complete")
 	if allComplete, err := finalSyncHandler.AreAllRSFinalSyncsComplete(); err != nil || allComplete {
 		if err != nil {
 			return nil, err

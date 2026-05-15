@@ -54,11 +54,15 @@ func main() {
 		getEnvOrDefault("PROVISIONER_NAME", "kubernetes.io/no-provisioner"),
 		"Storage provisioner name to watch for VGR resources. Can also be set via PROVISIONER_NAME environment variable.")
 
-	opts := zap.Options{Development: true}
+	opts := zap.Options{
+		Development: true,
+	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	// Enable caller information in logs (file:line)
+	logger := zap.New(zap.UseFlagOptions(&opts))
+	ctrl.SetLogger(logger.WithCallDepth(1))
 
 	setupLog.Info("mock-storage-operator configuration", "provisioner", provisionerName)
 

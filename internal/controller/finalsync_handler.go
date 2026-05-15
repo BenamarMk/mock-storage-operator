@@ -61,11 +61,11 @@ func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
 
 	// Check if any VRG meets the final sync criteria
 	for _, vrg := range vrgList.Items {
-		h.logger.V(1).Info("Checking if VRG requires final sync", "vrgName", vrg.Name)
+		h.logger.V(1).Info("Checking VRG", "vrgName", vrg.Name)
 		if vrg.Spec.Action == ramendrv1alpha1.VRGActionRelocate &&
 			vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary &&
 			h.vgr.Status.State != volrep.SecondaryState {
-			h.logger.Info("Final sync required based on VRG state",
+			h.logger.Info("Final sync required based on VRG state/status",
 				"vrgName", vrg.Name,
 				"action", vrg.Spec.Action,
 				"replicationState", vrg.Spec.ReplicationState,

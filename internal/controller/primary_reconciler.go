@@ -54,7 +54,7 @@ func NewPrimaryReconciler(
 
 // Reconcile orchestrates the primary reconciliation process
 func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
-	r.logger.Info("Reconciling VolumeGroupReplication as primary")
+	r.logger.Info("Reconciling as primary")
 
 	// Phase 1: Validate PVC selector
 	if r.vgr.Spec.Source.Selector == nil {

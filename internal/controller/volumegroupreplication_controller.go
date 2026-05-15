@@ -97,7 +97,6 @@ func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	logger.V(1).Info("Reconciling", "as", vgr.Spec.ReplicationState)
 	// Reconcile based on replication state
 	var result ctrl.Result
 	var err error
