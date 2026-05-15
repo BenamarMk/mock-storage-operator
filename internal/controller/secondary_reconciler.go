@@ -246,7 +246,7 @@ func (r *SecondaryReconciler) restoreTemporaryPVCs(pvcList *corev1.PersistentVol
 		if hasTempPVC {
 			r.logger.Info("Found temporary PVC, restoring original PVC", "pvcName", pvc.Name)
 			if err := r.vsHandler.RestorePVCFromTemporary(pvc.Name, pvc.Namespace); err != nil {
-				r.logger.Error(err, "Failed to restore PVC from temporary", "pvcName", pvc.Name)
+				r.logger.Info("Failed to restore PVC from temporary", "pvcName", pvc.Name, "error", err)
 				return err
 			}
 			r.logger.Info("Successfully restored PVC from temporary", "pvcName", pvc.Name)

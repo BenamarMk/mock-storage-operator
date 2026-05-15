@@ -983,13 +983,14 @@ func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace stri
 	tmpAnnotations[TemporaryPVCAnnotation] = "not reconcilable; used only to hold the main PVC info for restore"
 
 	// Filter labels - keep only "volumegroupreplication-owner" and "ramendr.openshift.io/consistency-group"
-	tmpLabels := make(map[string]string)
-	if val, ok := pvc.Labels[VRGOwnerLabel]; ok {
-		tmpLabels[VRGOwnerLabel] = val
-	}
-	if val, ok := pvc.Labels["ramendr.openshift.io/consistency-group"]; ok {
-		tmpLabels["ramendr.openshift.io/consistency-group"] = val
-	}
+	// tmpLabels := make(map[string]string)
+	// if val, ok := pvc.Labels[VRGOwnerLabel]; ok {
+	// 	tmpLabels[VRGOwnerLabel] = val
+	// }
+	// if val, ok := pvc.Labels["ramendr.openshift.io/consistency-group"]; ok {
+	// 	tmpLabels["ramendr.openshift.io/consistency-group"] = val
+	// }
+	tmpLabels := pvc.Labels
 
 	// Create the temporary PVC
 	tmpPVC := &corev1.PersistentVolumeClaim{
