@@ -21,11 +21,11 @@ import (
 )
 
 const (
-	// VRGOwnerLabel is used to label VolSync resources with their owner name
-	VRGOwnerLabel = "volumegroupreplication-owner"
+	// VGROwnerLabel is used to label VolSync resources with their owner name
+	VGROwnerLabel = "volumegroupreplication-owner"
 
-	// VRGOwnerNamespaceLabel is used to label VolSync resources with their owner namespace
-	VRGOwnerNamespaceLabel = "volumegroupreplication-owner-namespace"
+	// VGROwnerNamespaceLabel is used to label VolSync resources with their owner namespace
+	VGROwnerNamespaceLabel = "volumegroupreplication-owner-namespace"
 
 	// PVCFinalizerName is the finalizer added to PVCs protected by replication
 	PVCFinalizerName = "mock.storage.io/pvc-protection"
@@ -93,6 +93,8 @@ func (v *VSHandler) ReconcileRD(
 	consistencyGroup string,
 ) (*volsyncv1alpha1.ReplicationDestination, error) {
 	l := v.log.WithValues("pvcName", pvcName)
+
+	l.V(1).Info("ReplicationDestination Reconciling...")
 
 	if strings.HasSuffix(pvcName, "-tmp") {
 		l.Info("Skipping ReplicationDestination reconcile for temporary PVC and ensure RS is deleted")
@@ -217,12 +219,12 @@ func (v *VSHandler) ensurePVCLabels(pvcName, pvcNamespace string) error {
 	}
 
 	// Check and add VRG owner labels
-	if pvc.Labels[VRGOwnerLabel] != v.owner.GetName() {
-		pvc.Labels[VRGOwnerLabel] = v.owner.GetName()
+	if pvc.Labels[VGROwnerLabel] != v.owner.GetName() {
+		pvc.Labels[VGROwnerLabel] = v.owner.GetName()
 		needsUpdate = true
 	}
-	if pvc.Labels[VRGOwnerNamespaceLabel] != v.owner.GetNamespace() {
-		pvc.Labels[VRGOwnerNamespaceLabel] = v.owner.GetNamespace()
+	if pvc.Labels[VGROwnerNamespaceLabel] != v.owner.GetNamespace() {
+		pvc.Labels[VGROwnerNamespaceLabel] = v.owner.GetNamespace()
 		needsUpdate = true
 	}
 
@@ -261,7 +263,7 @@ func (v *VSHandler) createOrUpdateRD(
 	}
 
 	op, err := ctrlutil.CreateOrUpdate(v.ctx, v.client, rd, func() error {
-		addVRGOwnerLabel(v.owner, rd)
+		addVGROwnerLabel(v.owner, rd)
 
 		rd.Spec.RsyncTLS = &volsyncv1alpha1.ReplicationDestinationRsyncTLSSpec{
 			ServiceType: serviceType,
@@ -296,6 +298,8 @@ func (v *VSHandler) ReconcileRS(
 	volumeSnapshotClassName *string,
 ) (*volsyncv1alpha1.ReplicationSource, error) {
 	l := v.log.WithValues("pvcName", pvcName)
+
+	l.V(1).Info("ReplicationSource Reconciling...")
 
 	if strings.HasSuffix(pvcName, "-tmp") {
 		l.Info("Skipping ReplicationSource reconcile for temporary PVC")
@@ -380,7 +384,7 @@ func (v *VSHandler) createOrUpdateRS(
 	}
 
 	op, err := ctrlutil.CreateOrUpdate(v.ctx, v.client, rs, func() error {
-		addVRGOwnerLabel(v.owner, rs)
+		addVGROwnerLabel(v.owner, rs)
 
 		rs.Spec.SourcePVC = pvcName
 
@@ -453,12 +457,12 @@ func (v *VSHandler) validateSecretAndAddOwnerRef(secretName, secretNamespace str
 func (v *VSHandler) DeleteRS(pvcName, pvcNamespace string) error {
 	rsName := GetReplicationSourceName(pvcName)
 	rs := &volsyncv1alpha1.ReplicationSource{}
-	
+
 	err := v.client.Get(v.ctx, types.NamespacedName{
 		Name:      rsName,
 		Namespace: pvcNamespace,
 	}, rs)
-	
+
 	if err != nil {
 		if kerrors.IsNotFound(err) {
 			v.log.V(1).Info("ReplicationSource not found, nothing to delete", "name", rsName, "namespace", pvcNamespace)
@@ -471,7 +475,7 @@ func (v *VSHandler) DeleteRS(pvcName, pvcNamespace string) error {
 		v.log.Error(err, "Error deleting ReplicationSource", "name", rsName, "namespace", pvcNamespace)
 		return err
 	}
-	
+
 	v.log.Info("Deleted ReplicationSource", "name", rsName, "namespace", pvcNamespace)
 	return nil
 }
@@ -480,12 +484,12 @@ func (v *VSHandler) DeleteRS(pvcName, pvcNamespace string) error {
 func (v *VSHandler) DeleteRD(pvcName, pvcNamespace string) error {
 	rdName := getReplicationDestinationName(pvcName)
 	rd := &volsyncv1alpha1.ReplicationDestination{}
-	
+
 	err := v.client.Get(v.ctx, types.NamespacedName{
 		Name:      rdName,
 		Namespace: pvcNamespace,
 	}, rd)
-	
+
 	if err != nil {
 		if kerrors.IsNotFound(err) {
 			v.log.V(1).Info("ReplicationDestination not found, nothing to delete", "name", rdName, "namespace", pvcNamespace)
@@ -498,7 +502,7 @@ func (v *VSHandler) DeleteRD(pvcName, pvcNamespace string) error {
 		v.log.Error(err, "Error deleting ReplicationDestination", "name", rdName, "namespace", pvcNamespace)
 		return err
 	}
-	
+
 	v.log.Info("Deleted ReplicationDestination", "name", rdName, "namespace", pvcNamespace)
 	return nil
 }
@@ -570,7 +574,7 @@ func (v *VSHandler) listRDByOwner() (volsyncv1alpha1.ReplicationDestinationList,
 // listByOwner lists resources by owner label in the owner's namespace
 func (v *VSHandler) listByOwner(list client.ObjectList) error {
 	matchLabels := map[string]string{
-		VRGOwnerLabel: v.owner.GetName(),
+		VGROwnerLabel: v.owner.GetName(),
 	}
 	listOptions := []client.ListOption{
 		client.InNamespace(v.owner.GetNamespace()),
@@ -631,7 +635,7 @@ func (v *VSHandler) DeletePVCsByLabel() error {
 	pvcList := &corev1.PersistentVolumeClaimList{}
 
 	// List PVCs with the owner label
-	labelSelector := client.MatchingLabels{VRGOwnerLabel: v.owner.GetName()}
+	labelSelector := client.MatchingLabels{VGROwnerLabel: v.owner.GetName()}
 	if err := v.client.List(v.ctx, pvcList, labelSelector); err != nil {
 		return fmt.Errorf("failed to list PVCs by label: %w", err)
 	}
@@ -680,7 +684,7 @@ func (v *VSHandler) RemoveFinalizersFromPVCsByLabel() error {
 	pvcList := &corev1.PersistentVolumeClaimList{}
 
 	// List PVCs with the owner label
-	labelSelector := client.MatchingLabels{VRGOwnerLabel: v.owner.GetName()}
+	labelSelector := client.MatchingLabels{VGROwnerLabel: v.owner.GetName()}
 	if err := v.client.List(v.ctx, pvcList, labelSelector); err != nil {
 		return fmt.Errorf("failed to list PVCs by label: %w", err)
 	}
@@ -754,15 +758,15 @@ func (v *VSHandler) getScheduleCronSpec() (*string, error) {
 
 // Helper functions
 
-// addVRGOwnerLabel adds owner name and namespace labels to an object
-func addVRGOwnerLabel(owner, obj metav1.Object) {
+// addVGROwnerLabel adds owner name and namespace labels to an object
+func addVGROwnerLabel(owner, obj metav1.Object) {
 	labels := obj.GetLabels()
 	if labels == nil {
 		labels = make(map[string]string)
 	}
 
-	labels[VRGOwnerLabel] = owner.GetName()
-	labels[VRGOwnerNamespaceLabel] = owner.GetNamespace()
+	labels[VGROwnerLabel] = owner.GetName()
+	labels[VGROwnerNamespaceLabel] = owner.GetNamespace()
 	obj.SetLabels(labels)
 }
 
@@ -1100,11 +1104,11 @@ func (v *VSHandler) RestorePVCFromTemporary(pvcName, pvcNamespace string) error 
 
 	// Filter labels - keep only "volumegroupreplication-owner" and "ramendr.openshift.io/consistency-group"
 	pvcLabels := make(map[string]string)
-	if val, ok := tmpPVC.Labels[VRGOwnerLabel]; ok {
-		pvcLabels[VRGOwnerLabel] = val
+	if val, ok := tmpPVC.Labels[VGROwnerLabel]; ok {
+		pvcLabels[VGROwnerLabel] = val
 	}
-	if val, ok := tmpPVC.Labels[VRGOwnerNamespaceLabel]; ok {
-		pvcLabels[VRGOwnerNamespaceLabel] = val
+	if val, ok := tmpPVC.Labels[VGROwnerNamespaceLabel]; ok {
+		pvcLabels[VGROwnerNamespaceLabel] = val
 	}
 	if val, ok := tmpPVC.Labels["ramendr.openshift.io/consistency-group"]; ok {
 		pvcLabels["ramendr.openshift.io/consistency-group"] = val

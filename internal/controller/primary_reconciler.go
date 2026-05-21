@@ -72,9 +72,14 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 		return *result, err
 	}
 
-	// Phase 3: Get PVC list
+	// Phase 3: Get PVC list - filter by selector and owner labels
 	pvcList := &corev1.PersistentVolumeClaimList{}
-	if err := r.client.List(r.ctx, pvcList, client.MatchingLabelsSelector{Selector: sel}); err != nil {
+	if err := r.client.List(r.ctx, pvcList,
+		client.MatchingLabelsSelector{Selector: sel},
+		client.MatchingLabels{
+			volsync.VGROwnerLabel:          r.vgr.Name,
+			volsync.VGROwnerNamespaceLabel: r.vgr.Namespace,
+		}); err != nil {
 		return ctrl.Result{}, err
 	}
 
