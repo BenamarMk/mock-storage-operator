@@ -57,8 +57,10 @@ type VolumeGroupReplicationReconciler struct {
 // Reconcile is the main reconciliation loop
 func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
 	logger.Info("------------------------------------------------------------")
 	logger.V(1).Info("Reconciling VolumeGroupReplication", "volumeGroupReplication", req.NamespacedName)
+
 	vgr := &volrep.VolumeGroupReplication{}
 	if err := r.Get(ctx, req.NamespacedName, vgr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -112,7 +114,7 @@ func (r *VolumeGroupReplicationReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	logger.V(1).Info("Reconciled", "as", vgr.Spec.ReplicationState, "result", result, "error", err)
-	
+
 	if err := r.Status().Update(ctx, vgr); err != nil {
 		return ctrl.Result{}, err
 	}

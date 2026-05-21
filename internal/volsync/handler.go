@@ -153,12 +153,6 @@ func (v *VSHandler) ReconcileRD(
 		return nil, err
 	}
 
-	// Now create destination PVC (like Ramen's EnsurePVCforDirectCopy)
-	// err = v.ensureDestinationPVC(pvcName, pvcNamespace, capacity, storageClassName, accessModes, consistencyGroup)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
 	// Add finalizer to PVC for protection
 	if err := v.addFinalizerToPVC(pvcName, pvcNamespace); err != nil {
 		l.Error(err, "Failed to add finalizer to PVC")
@@ -192,67 +186,6 @@ func rdStatusReady(rd *volsyncv1alpha1.ReplicationDestination, log logr.Logger) 
 	}
 
 	return true
-}
-
-// ensureDestinationPVC creates the destination PVC if it doesn't exist
-// This is similar to Ramen's EnsurePVCforDirectCopy function
-// Note: Ownership is set separately via setPVCOwnerIfNeeded
-func (v *VSHandler) ensureDestinationPVC(
-	pvcName, pvcNamespace string,
-	capacity *resource.Quantity,
-	storageClassName *string,
-	accessModes []corev1.PersistentVolumeAccessMode,
-	consistencyGroup string,
-) error {
-	l := v.log.WithValues("pvcName", pvcName)
-
-	if len(accessModes) == 0 {
-		return fmt.Errorf("accessModes must be provided for PVC %s", pvcName)
-	}
-
-	if capacity == nil {
-		return fmt.Errorf("capacity must be provided for PVC %s", pvcName)
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pvcName,
-			Namespace: pvcNamespace,
-		},
-	}
-
-	op, err := ctrlutil.CreateOrUpdate(v.ctx, v.client, pvc, func() error {
-		// Set consistency group label if provided
-		if consistencyGroup != "" {
-			if pvc.Labels == nil {
-				pvc.Labels = make(map[string]string)
-			}
-			pvc.Labels["ramendr.openshift.io/consistency-group"] = consistencyGroup
-			pvc.Labels[VRGOwnerLabel] = v.owner.GetName()
-		}
-
-		// Only set spec fields if PVC is being created (not already exists)
-		if pvc.CreationTimestamp.IsZero() {
-			pvc.Spec.AccessModes = accessModes
-			pvc.Spec.StorageClassName = storageClassName
-			volumeMode := corev1.PersistentVolumeFilesystem
-			pvc.Spec.VolumeMode = &volumeMode
-		}
-
-		// Always update capacity (can be expanded)
-		pvc.Spec.Resources.Requests = corev1.ResourceList{
-			corev1.ResourceStorage: *capacity,
-		}
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create/update destination PVC: %w", err)
-	}
-
-	l.V(1).Info("Destination PVC ensured", "operation", op, "pvc", pvcName)
-
-	return nil
 }
 
 // ensurePVCLabels ensures the PVC has required labels for replication
@@ -982,14 +915,6 @@ func (v *VSHandler) CreateTemporaryPVCFromTerminating(pvcName, pvcNamespace stri
 	}
 	tmpAnnotations[TemporaryPVCAnnotation] = "not reconcilable; used only to hold the main PVC info for restore"
 
-	// Filter labels - keep only "volumegroupreplication-owner" and "ramendr.openshift.io/consistency-group"
-	// tmpLabels := make(map[string]string)
-	// if val, ok := pvc.Labels[VRGOwnerLabel]; ok {
-	// 	tmpLabels[VRGOwnerLabel] = val
-	// }
-	// if val, ok := pvc.Labels["ramendr.openshift.io/consistency-group"]; ok {
-	// 	tmpLabels["ramendr.openshift.io/consistency-group"] = val
-	// }
 	tmpLabels := pvc.Labels
 
 	// Create the temporary PVC
@@ -1127,6 +1052,11 @@ func (v *VSHandler) RestorePVCFromTemporary(pvcName, pvcNamespace string) error 
 		return fmt.Errorf("failed to check existing PVC before restore: %w", err)
 	}
 	if err == nil && existingPVC.DeletionTimestamp != nil {
+		tmpPVC.Labels = existingPVC.Labels
+		if err := v.client.Update(v.ctx, tmpPVC); err != nil {
+			return fmt.Errorf("failed to update temporary PVC labels from App PVC before letting it go: %w", err)
+		}
+
 		if len(existingPVC.Finalizers) > 0 {
 			existingPVC.Finalizers = nil
 			if err := v.client.Update(v.ctx, existingPVC); err != nil {
@@ -1149,12 +1079,21 @@ func (v *VSHandler) RestorePVCFromTemporary(pvcName, pvcNamespace string) error 
 		restoreAnnotations[key] = value
 	}
 
+	// Filter labels - keep only "volumegroupreplication-owner" and "ramendr.openshift.io/consistency-group"
+	pvcLabels := make(map[string]string)
+	if val, ok := tmpPVC.Labels[VRGOwnerLabel]; ok {
+		pvcLabels[VRGOwnerLabel] = val
+	}
+	if val, ok := tmpPVC.Labels["ramendr.openshift.io/consistency-group"]; ok {
+		pvcLabels["ramendr.openshift.io/consistency-group"] = val
+	}
+
 	newPVC := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        pvcName,
 			Namespace:   pvcNamespace,
 			Annotations: restoreAnnotations,
-			Labels:      tmpPVC.Labels,
+			Labels:      pvcLabels,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      tmpPVC.Spec.AccessModes,

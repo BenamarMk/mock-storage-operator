@@ -46,7 +46,7 @@ func NewSecondaryReconciler(
 	return &SecondaryReconciler{
 		client:   client,
 		ctx:      ctx,
-		logger:   logger.WithValues("reconciler", "Secondary", "vgr", vgr.Name, "vgrClass", vgrClass.Name),
+		logger:   logger,
 		vgr:      vgr,
 		vgrClass: vgrClass,
 	}
@@ -76,7 +76,8 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 	r.vsHandler = volsync.NewVSHandler(r.ctx, r.client, r.logger, r.vgr, config.SchedulingInterval)
 
 	// Phase 3: Handle final sync if needed
-	if result, err := r.handleFinalSync(pvcList); err != nil || result != nil {
+	runFinalSync := true // will be modified if running final sync not required
+	if result, err := r.handleFinalSync(pvcList, &runFinalSync); err != nil || result != nil {
 		if result != nil {
 			return *result, err
 		}
@@ -88,15 +89,17 @@ func (r *SecondaryReconciler) Reconcile() (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	allComplete, err := r.isFinalSyncComplete()
-	if err != nil {
-		r.logger.V(1).Info("Failed to check final sync status", "error", err)
-		return ctrl.Result{}, err
-	}
+	if runFinalSync {
+		allComplete, err := r.isFinalSyncComplete()
+		if err != nil {
+			r.logger.V(1).Info("Warning: Failed to check final sync status", "error", err)
+			return ctrl.Result{}, err
+		}
 
-	if !allComplete {
-		r.logger.V(1).Info("Not all final syncs are complete")
-		return ctrl.Result{}, err
+		if !allComplete {
+			r.logger.V(1).Info("Not all final syncs are complete")
+			return ctrl.Result{}, err
+		}
 	}
 	// Phase 5: Reconcile ReplicationDestinations
 	protectedPVCs, allReady, err := r.reconcileReplicationDestinations(pvcList, config)
@@ -132,7 +135,9 @@ func (r *SecondaryReconciler) getPVCList() (*corev1.PersistentVolumeClaimList, e
 	}
 
 	pvcList := &corev1.PersistentVolumeClaimList{}
-	if err := r.client.List(r.ctx, pvcList, client.MatchingLabelsSelector{Selector: sel}); err != nil {
+	if err := r.client.List(r.ctx, pvcList,
+		client.InNamespace(r.vgr.Namespace),
+		client.MatchingLabelsSelector{Selector: sel}); err != nil {
 		return nil, err
 	}
 
@@ -180,12 +185,13 @@ func (r *SecondaryReconciler) getConfiguration() *SecondaryConfig {
 }
 
 // handleFinalSync processes final sync if annotation is present
-func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeClaimList) (*ctrl.Result, error) {
+func (r *SecondaryReconciler) handleFinalSync(pvcList *corev1.PersistentVolumeClaimList, runFinalSync *bool) (*ctrl.Result, error) {
 	r.logger.V(1).Info("Checking if final sync should be run")
 	
 	finalSyncHandler := NewFinalSyncHandler(r.ctx, r.client, r.logger, r.vgr, r.vsHandler)
 
 	if !finalSyncHandler.ShouldRunFinalSync() {
+		*runFinalSync = false
 		return nil, nil
 	}
 
@@ -246,10 +252,12 @@ func (r *SecondaryReconciler) restoreTemporaryPVCs(pvcList *corev1.PersistentVol
 		if hasTempPVC {
 			r.logger.Info("Found temporary PVC, restoring original PVC", "pvcName", pvc.Name)
 			if err := r.vsHandler.RestorePVCFromTemporary(pvc.Name, pvc.Namespace); err != nil {
-				r.logger.Info("Failed to restore PVC from temporary", "pvcName", pvc.Name, "error", err)
+				r.logger.Info("Warning: Failed to restore PVC from temporary", "pvcName", pvc.Name, "error", err)
 				return err
 			}
 			r.logger.Info("Successfully restored PVC from temporary", "pvcName", pvc.Name)
+		} else {
+			r.logger.Info("No temporary PVC exists", "pvcName", pvc.Name)
 		}
 	}
 
@@ -369,7 +377,7 @@ func (r *SecondaryReconciler) reconcilePVCReplicationDestination(
 	pvc *corev1.PersistentVolumeClaim,
 	config *PVCConfig,
 ) (*volsyncv1alpha1.ReplicationDestination, error) {
-	r.logger.V(1).Info("Protecting DST PVC", "pvc.metadata", pvc.ObjectMeta)
+	r.logger.V(1).Info("Protecting PVC", "pvcName", pvc.Name)
 
 	// Create VolSync handler with per-PVC scheduling interval
 	vsHandler := volsync.NewVSHandler(r.ctx, r.client, r.logger, r.vgr, config.SchedulingInterval)

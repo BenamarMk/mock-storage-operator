@@ -46,7 +46,7 @@ func NewPrimaryReconciler(
 	return &PrimaryReconciler{
 		client:   client,
 		ctx:      ctx,
-		logger:   logger.WithValues("reconciler", "Primary"),
+		logger:   logger,
 		vgr:      vgr,
 		vgrClass: vgrClass,
 	}
@@ -54,7 +54,7 @@ func NewPrimaryReconciler(
 
 // Reconcile orchestrates the primary reconciliation process
 func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
-	r.logger.Info("Reconciling as primary")
+	r.logger.V(1).Info("Reconciling as primary")
 
 	// Phase 1: Validate PVC selector
 	if r.vgr.Spec.Source.Selector == nil {
@@ -91,9 +91,9 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 	}
 
 	// Phase 6: Update PVC annotations
-	if err := r.updatePVCAnnotations(pvcList, latestSync); err != nil {
-		return ctrl.Result{}, err
-	}
+	// if err := r.updatePVCAnnotations(pvcList, latestSync); err != nil {
+	// 	return ctrl.Result{}, err
+	// }
 
 	// Phase 7: Update status
 	if err := r.updateStatus(protectedPVCs, latestSync); err != nil {
@@ -108,7 +108,7 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 func (r *PrimaryReconciler) checkVRGConflict() (*ctrl.Result, error) {
 	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
 	if err := r.client.List(r.ctx, vrgList, client.InNamespace(r.vgr.Namespace)); err != nil {
-		r.logger.V(1).Info("Failed to list VRGs, continuing without VRG check", "error", err)
+		r.logger.V(1).Info("Warning: Failed to list VRGs, continuing without VRG check", "error", err)
 		return nil, nil
 	}
 
@@ -269,7 +269,7 @@ func (r *PrimaryReconciler) reconcilePVCReplicationSource(
 	pvc *corev1.PersistentVolumeClaim,
 	config *PrimaryConfig,
 ) (*volsyncv1alpha1.ReplicationSource, error) {
-	r.logger.V(1).Info("Protecting SRC PVC", "pvc.metadata", pvc.ObjectMeta)
+	r.logger.V(1).Info("Protecting PVC", "pvcName", pvc.Name)
 
 	// Use Submariner service name for remote address
 	// The remote service name follows the pattern: <service-name>.<namespace>.svc.clusterset.local
@@ -324,6 +324,7 @@ func (r *PrimaryReconciler) updateStatus(
 	protectedPVCs []corev1.LocalObjectReference,
 	latestSync *metav1.Time,
 ) error {
+	r.logger.Info("Updating VGR status", "protectedPVCs", len(protectedPVCs), "lastSyncTime", latestSync)
 	// Update status
 	r.vgr.Status.State = volrep.PrimaryState
 	r.vgr.Status.PersistentVolumeClaimsRefList = protectedPVCs

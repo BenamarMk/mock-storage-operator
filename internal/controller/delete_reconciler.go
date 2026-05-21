@@ -30,7 +30,7 @@ func NewDeleteReconciler(
 	return &DeleteReconciler{
 		client: client,
 		ctx:    ctx,
-		logger: logger.WithValues("reconciler", "Delete"),
+		logger: logger,
 		vgr:    vgr,
 	}
 }

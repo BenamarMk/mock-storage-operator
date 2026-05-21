@@ -38,7 +38,7 @@ func NewFinalSyncHandler(
 	return &FinalSyncHandler{
 		client:    client,
 		ctx:       ctx,
-		logger:    logger.WithValues("handler", "FinalSync"),
+		logger:    logger,
 		vgr:       vgr,
 		vsHandler: vsHandler,
 	}
@@ -49,7 +49,7 @@ func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
 	// List VRGs in the namespace
 	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
 	if err := h.client.List(h.ctx, vrgList, client.InNamespace(h.vgr.Namespace)); err != nil {
-		h.logger.V(1).Info("Failed to list VRGs, skipping final sync check", "error", err)
+		h.logger.V(1).Info("Warning: Failed to list VRGs, skipping final sync check", "error", err)
 		return false
 	}
 
@@ -139,12 +139,14 @@ func (h *FinalSyncHandler) ProcessFinalSync(pvcList *corev1.PersistentVolumeClai
 	for _, pvc := range pvcList.Items {
 		// Skip temporary PVCs
 		if h.isTemporaryPVC(&pvc) {
+			h.logger.Info("Skipping temporary pvcs", "pvcName", pvc.Name)
 			if err := h.handleLostTemporaryPVC(&pvc); err != nil {
 				return nil, err
 			}
 			continue
 		}
 
+		h.logger.Info("Processing PVC", "pvcName", pvc.Name, "pvcNamespace", pvc.Namespace)
 		totalPVCs++
 
 		// Check if PVC is terminating
@@ -336,7 +338,7 @@ func (h *FinalSyncHandler) triggerFinalSyncForPVC(pvc *corev1.PersistentVolumeCl
 	h.logger.Info("Unpaused ReplicationSource for final sync", "tmpPVC", tmpPVCName, "rsName", rsName)
 
 	// Check if final sync is complete
-	complete := isFinalSyncComplete(rs, h.logger.WithValues("pvcName", pvc.Name))
+	complete := isFinalSyncComplete(rs, h.logger)
 	if complete {
 		h.logger.Info("Final sync complete for PVC", "pvcName", pvc.Name)
 	} else {
