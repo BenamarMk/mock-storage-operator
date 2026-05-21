@@ -46,32 +46,32 @@ func NewFinalSyncHandler(
 
 // ShouldRunFinalSync checks if final sync should be executed by checking VRG state
 func (h *FinalSyncHandler) ShouldRunFinalSync() bool {
-	// List VRGs in the namespace
-	vrgList := &ramendrv1alpha1.VolumeReplicationGroupList{}
-	if err := h.client.List(h.ctx, vrgList, client.InNamespace(h.vgr.Namespace)); err != nil {
-		h.logger.V(1).Info("Warning: Failed to list VRGs, skipping final sync check", "error", err)
+	// Get VRG name and namespace from VGR labels
+	vrgName := h.vgr.Labels["ramendr.openshift.io/owner-name"]
+	vrgNamespace := h.vgr.Labels["ramendr.openshift.io/owner-namespace-name"]
+	
+	if vrgName == "" || vrgNamespace == "" {
+		h.logger.V(1).Info("VRG owner labels not found on VGR, skipping final sync check")
 		return false
 	}
 
-	// Check if no VRGs exist
-	if len(vrgList.Items) == 0 {
-		h.logger.V(1).Info("VRG list is empty, skipping final sync check")
+	// Get the specific VRG directly
+	vrg := &ramendrv1alpha1.VolumeReplicationGroup{}
+	if err := h.client.Get(h.ctx, types.NamespacedName{Name: vrgName, Namespace: vrgNamespace}, vrg); err != nil {
+		h.logger.V(1).Info("Failed to get VRG, skipping final sync check", "error", err, "vrgName", vrgName, "vrgNamespace", vrgNamespace)
 		return false
 	}
 
-	// Check if any VRG meets the final sync criteria
-	for _, vrg := range vrgList.Items {
-		h.logger.V(1).Info("Checking VRG", "vrgName", vrg.Name)
-		if vrg.Spec.Action == ramendrv1alpha1.VRGActionRelocate &&
-			vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary &&
-			h.vgr.Status.State != volrep.SecondaryState {
-			h.logger.Info("Final sync required based on VRG state/status",
-				"vrgName", vrg.Name,
-				"action", vrg.Spec.Action,
-				"replicationState", vrg.Spec.ReplicationState,
-				"statusState", vrg.Status.State)
-			return true
-		}
+	// Check if VRG meets the final sync criteria
+	if vrg.Spec.Action == ramendrv1alpha1.VRGActionRelocate &&
+		vrg.Spec.ReplicationState == ramendrv1alpha1.Secondary &&
+		h.vgr.Status.State != volrep.SecondaryState {
+		h.logger.Info("Final sync required based on VRG state/status",
+			"vrgName", vrg.Name,
+			"action", vrg.Spec.Action,
+			"replicationState", vrg.Spec.ReplicationState,
+			"statusState", vrg.Status.State)
+		return true
 	}
 
 	return false
