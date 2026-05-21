@@ -567,12 +567,13 @@ func (v *VSHandler) listRDByOwner() (volsyncv1alpha1.ReplicationDestinationList,
 	return rdList, nil
 }
 
-// listByOwner lists resources by owner label
+// listByOwner lists resources by owner label in the owner's namespace
 func (v *VSHandler) listByOwner(list client.ObjectList) error {
 	matchLabels := map[string]string{
 		VRGOwnerLabel: v.owner.GetName(),
 	}
 	listOptions := []client.ListOption{
+		client.InNamespace(v.owner.GetNamespace()),
 		client.MatchingLabels(matchLabels),
 	}
 
