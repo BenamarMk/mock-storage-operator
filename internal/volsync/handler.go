@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	// VRGOwnerLabel is used to label VolSync resources with their owner
+	// VRGOwnerLabel is used to label VolSync resources with their owner name
 	VRGOwnerLabel = "volumegroupreplication-owner"
+
+	// VRGOwnerNamespaceLabel is used to label VolSync resources with their owner namespace
+	VRGOwnerNamespaceLabel = "volumegroupreplication-owner-namespace"
 
 	// PVCFinalizerName is the finalizer added to PVCs protected by replication
 	PVCFinalizerName = "mock.storage.io/pvc-protection"
@@ -213,9 +216,13 @@ func (v *VSHandler) ensurePVCLabels(pvcName, pvcNamespace string) error {
 		pvc.Labels = make(map[string]string)
 	}
 
-	// Check and add VRG owner label
+	// Check and add VRG owner labels
 	if pvc.Labels[VRGOwnerLabel] != v.owner.GetName() {
 		pvc.Labels[VRGOwnerLabel] = v.owner.GetName()
+		needsUpdate = true
+	}
+	if pvc.Labels[VRGOwnerNamespaceLabel] != v.owner.GetNamespace() {
+		pvc.Labels[VRGOwnerNamespaceLabel] = v.owner.GetNamespace()
 		needsUpdate = true
 	}
 
@@ -746,7 +753,7 @@ func (v *VSHandler) getScheduleCronSpec() (*string, error) {
 
 // Helper functions
 
-// addVRGOwnerLabel adds owner label to an object
+// addVRGOwnerLabel adds owner name and namespace labels to an object
 func addVRGOwnerLabel(owner, obj metav1.Object) {
 	labels := obj.GetLabels()
 	if labels == nil {
@@ -754,6 +761,7 @@ func addVRGOwnerLabel(owner, obj metav1.Object) {
 	}
 
 	labels[VRGOwnerLabel] = owner.GetName()
+	labels[VRGOwnerNamespaceLabel] = owner.GetNamespace()
 	obj.SetLabels(labels)
 }
 
@@ -1093,6 +1101,9 @@ func (v *VSHandler) RestorePVCFromTemporary(pvcName, pvcNamespace string) error 
 	pvcLabels := make(map[string]string)
 	if val, ok := tmpPVC.Labels[VRGOwnerLabel]; ok {
 		pvcLabels[VRGOwnerLabel] = val
+	}
+	if val, ok := tmpPVC.Labels[VRGOwnerNamespaceLabel]; ok {
+		pvcLabels[VRGOwnerNamespaceLabel] = val
 	}
 	if val, ok := tmpPVC.Labels["ramendr.openshift.io/consistency-group"]; ok {
 		pvcLabels["ramendr.openshift.io/consistency-group"] = val
