@@ -94,7 +94,7 @@ func (v *VSHandler) ReconcileRD(
 	if strings.HasSuffix(pvcName, "-tmp") {
 		l.Info("Skipping ReplicationDestination reconcile for temporary PVC and ensure RS is deleted")
 		// Delete the RS
-		if err := v.DeleteRS(pvcName); err != nil {
+		if err := v.DeleteRS(pvcName, pvcNamespace); err != nil {
 			l.Error(err, "Failed to delete ReplicationSource for terminating PVC")
 			return nil, err
 		}
@@ -142,7 +142,7 @@ func (v *VSHandler) ReconcileRD(
 
 	// Check if a ReplicationSource is still here (Can happen if transitioning from primary to secondary)
 	// Before creating a new RD for this PVC, make sure any ReplicationSource for this PVC is cleaned up first
-	err = v.DeleteRS(pvcName)
+	err = v.DeleteRS(pvcName, pvcNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +328,7 @@ func (v *VSHandler) ReconcileRS(
 
 	// Check if a ReplicationDestination is still here (Can happen if transitioning from secondary to primary)
 	// Before creating a new RS for this PVC, make sure any ReplicationDestination for this PVC is cleaned up first
-	err = v.DeleteRD(pvcName)
+	err = v.DeleteRD(pvcName, pvcNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -442,47 +442,57 @@ func (v *VSHandler) validateSecretAndAddOwnerRef(secretName, secretNamespace str
 	return true, nil
 }
 
-// DeleteRS deletes a ReplicationSource by PVC name
-func (v *VSHandler) DeleteRS(pvcName string) error {
-	currentRSListByOwner, err := v.listRSByOwner()
+// DeleteRS deletes a ReplicationSource by PVC name and namespace
+func (v *VSHandler) DeleteRS(pvcName, pvcNamespace string) error {
+	rsName := GetReplicationSourceName(pvcName)
+	rs := &volsyncv1alpha1.ReplicationSource{}
+	
+	err := v.client.Get(v.ctx, types.NamespacedName{
+		Name:      rsName,
+		Namespace: pvcNamespace,
+	}, rs)
+	
 	if err != nil {
+		if kerrors.IsNotFound(err) {
+			v.log.V(1).Info("ReplicationSource not found, nothing to delete", "name", rsName, "namespace", pvcNamespace)
+			return nil
+		}
+		return fmt.Errorf("failed to get ReplicationSource: %w", err)
+	}
+
+	if err := v.client.Delete(v.ctx, rs); err != nil {
+		v.log.Error(err, "Error deleting ReplicationSource", "name", rsName, "namespace", pvcNamespace)
 		return err
 	}
-
-	for i := range currentRSListByOwner.Items {
-		rs := currentRSListByOwner.Items[i]
-
-		if rs.GetName() == GetReplicationSourceName(pvcName) {
-			if err := v.client.Delete(v.ctx, &rs); err != nil {
-				v.log.Error(err, "Error cleaning up ReplicationSource", "name", rs.GetName())
-			} else {
-				v.log.Info("Deleted ReplicationSource", "name", rs.GetName())
-			}
-		}
-	}
-
+	
+	v.log.Info("Deleted ReplicationSource", "name", rsName, "namespace", pvcNamespace)
 	return nil
 }
 
-// DeleteRD deletes a ReplicationDestination by PVC name
-func (v *VSHandler) DeleteRD(pvcName string) error {
-	currentRDListByOwner, err := v.listRDByOwner()
+// DeleteRD deletes a ReplicationDestination by PVC name and namespace
+func (v *VSHandler) DeleteRD(pvcName, pvcNamespace string) error {
+	rdName := getReplicationDestinationName(pvcName)
+	rd := &volsyncv1alpha1.ReplicationDestination{}
+	
+	err := v.client.Get(v.ctx, types.NamespacedName{
+		Name:      rdName,
+		Namespace: pvcNamespace,
+	}, rd)
+	
 	if err != nil {
+		if kerrors.IsNotFound(err) {
+			v.log.V(1).Info("ReplicationDestination not found, nothing to delete", "name", rdName, "namespace", pvcNamespace)
+			return nil
+		}
+		return fmt.Errorf("failed to get ReplicationDestination: %w", err)
+	}
+
+	if err := v.client.Delete(v.ctx, rd); err != nil {
+		v.log.Error(err, "Error deleting ReplicationDestination", "name", rdName, "namespace", pvcNamespace)
 		return err
 	}
-
-	for i := range currentRDListByOwner.Items {
-		rd := currentRDListByOwner.Items[i]
-
-		if rd.GetName() == getReplicationDestinationName(pvcName) {
-			if err := v.client.Delete(v.ctx, &rd); err != nil {
-				v.log.Error(err, "Error cleaning up ReplicationDestination", "name", rd.GetName())
-			} else {
-				v.log.Info("Deleted ReplicationDestination", "name", rd.GetName())
-			}
-		}
-	}
-
+	
+	v.log.Info("Deleted ReplicationDestination", "name", rdName, "namespace", pvcNamespace)
 	return nil
 }
 
