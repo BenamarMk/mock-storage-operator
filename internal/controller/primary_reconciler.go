@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
@@ -13,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -56,7 +59,12 @@ func NewPrimaryReconciler(
 func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 	r.logger.V(1).Info("Reconciling as primary")
 
-	// Phase 1: Validate PVC selector
+	// Phase 1: Check if safe to proceed with failover (if VRG is in failover state)
+	if result, err := r.checkFailoverSafety(); err != nil || result != nil {
+		return *result, err
+	}
+
+	// Phase 2: Validate PVC selector
 	if r.vgr.Spec.Source.Selector == nil {
 		r.logger.Info("No PVC selector specified")
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
@@ -67,12 +75,12 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 		return ctrl.Result{}, fmt.Errorf("invalid pvcSelector: %w", err)
 	}
 
-	// Phase 2: Check for VRG conflicts
+	// Phase 3: Check for VRG conflicts
 	if result, err := r.checkVRGConflict(); err != nil || result != nil {
 		return *result, err
 	}
 
-	// Phase 3: Get PVC list - filter by selector and owner labels
+	// Phase 4: Get PVC list - filter by selector and owner labels
 	pvcList := &corev1.PersistentVolumeClaimList{}
 	if err := r.client.List(r.ctx, pvcList,
 		client.MatchingLabelsSelector{Selector: sel},
@@ -83,30 +91,84 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	// Phase 4: Get configuration
+	// Phase 5: Get configuration
 	config := r.getConfiguration()
 
 	// Create VolSync handler
 	r.vsHandler = volsync.NewVSHandler(r.ctx, r.client, r.logger, r.vgr, config.SchedulingInterval)
 
-	// Phase 5: Reconcile ReplicationSources for all PVCs
+	// Phase 6: Reconcile ReplicationSources for all PVCs
 	protectedPVCs, latestSync, err := r.reconcileReplicationSources(pvcList, config)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Phase 6: Update PVC annotations
+	// Phase 7: Update PVC annotations
 	// if err := r.updatePVCAnnotations(pvcList, latestSync); err != nil {
 	// 	return ctrl.Result{}, err
 	// }
 
-	// Phase 7: Update status
+	// Phase 8: Update status
 	if err := r.updateStatus(protectedPVCs, latestSync); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	r.logger.Info("Primary reconcile complete", "protectedPVCs", len(protectedPVCs))
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+// checkFailoverSafety checks if it's safe to proceed when VRG is in failover state
+// Returns a result to requeue if not safe, or nil if safe to proceed
+func (r *PrimaryReconciler) checkFailoverSafety() (*ctrl.Result, error) {
+	// Step 1: Get the VRG owning this VGR using owner labels
+	vrgName := r.vgr.Labels["ramendr.openshift.io/owner-name"]
+	vrgNamespace := r.vgr.Labels["ramendr.openshift.io/owner-namespace-name"]
+
+	if vrgName == "" || vrgNamespace == "" {
+		r.logger.V(1).Info("VRG owner labels not found on VGR, allowing operation to proceed")
+		return nil, nil
+	}
+
+	vrg := &ramendrv1alpha1.VolumeReplicationGroup{}
+	if err := r.client.Get(r.ctx, types.NamespacedName{
+		Name:      vrgName,
+		Namespace: vrgNamespace,
+	}, vrg); err != nil {
+		r.logger.V(1).Info("Failed to get owner VRG, allowing operation to proceed", "error", err)
+		return nil, nil
+	}
+
+	// Step 2: Check if VRG action is Failover
+	if vrg.Spec.Action != ramendrv1alpha1.VRGActionFailover {
+		r.logger.V(1).Info("VRG action is not Failover, allowing operation to proceed",
+			"action", vrg.Spec.Action)
+		return nil, nil
+	}
+
+	// Step 3: Check if VRG status state is Primary (normal operation, allow to continue)
+	if vrg.Status.State == ramendrv1alpha1.PrimaryState {
+		r.logger.V(1).Info("VRG is in Failover action and in Primary state, allowing operation to proceed",
+			"vrgName", vrg.Name)
+		return nil, nil
+	}
+
+	// Step 4: Check if we're within the schedule window (safe to failover)
+	config := r.getConfiguration()
+	now := time.Now()
+	if !r.isWithinScheduleWindow(now, config.SchedulingInterval) {
+		r.logger.Info("VRG is in Failover but not within schedule window, waiting for safe window",
+			"vrgName", vrg.Name,
+			"schedulingInterval", config.SchedulingInterval)
+		result := ctrl.Result{RequeueAfter: 30 * time.Second}
+		return &result, nil
+	}
+
+	// Step 5: All prerequisites met, safe to proceed
+	r.logger.Info("All failover prerequisites met, safe to proceed",
+		"vrgName", vrg.Name,
+		"vrgAction", vrg.Spec.Action,
+		"vrgState", vrg.Status.State)
+	return nil, nil
 }
 
 // checkVRGConflict checks if VRG is in Secondary state and pauses all RS if needed
@@ -367,6 +429,63 @@ func (r *PrimaryReconciler) updateStatus(
 		r.vgr.Generation)
 
 	return r.client.Status().Update(r.ctx, r.vgr)
+}
+
+
+// ParseSchedulingInterval parses a scheduling interval string (e.g. "5m", "10m", "15m")
+// into a time.Duration. Returns an error if the format is invalid.
+func ParseSchedulingInterval(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasSuffix(s, "m") {
+		return 0, fmt.Errorf("invalid schedulingInterval %q: must be in the form \"5m\", \"10m\", \"15m\"", s)
+	}
+
+	raw := strings.TrimSuffix(s, "m")
+	minutes, err := strconv.Atoi(raw)
+	if err != nil || minutes <= 0 {
+		return 0, fmt.Errorf("invalid schedulingInterval %q: minute value must be a positive integer", s)
+	}
+
+	return time.Duration(minutes) * time.Minute, nil
+}
+
+// IsWithinScheduleWindow checks whether the current time falls within the valid
+// window of a cron-like schedule interval. The window is defined as:
+//
+//	[lastTick + 1m, nextTick - 1m)
+//
+// If the interval is less than 5 minutes or greater than 15 minutes,
+// the check is considered always valid (returns true).
+// Only intervals of 5m, 10m, or 15m are actively checked.
+func (r *PrimaryReconciler) isWithinScheduleWindow(now time.Time, schedulingInterval string) bool {
+	interval, err := ParseSchedulingInterval(schedulingInterval)
+	if err != nil {
+		r.logger.Error(err, "failed to parse scheduling interval", "interval", schedulingInterval)
+		return false
+	}
+
+	const (
+		minInterval = 5 * time.Minute
+		maxInterval = 15 * time.Minute
+		margin      = 1 * time.Minute
+	)
+
+	// Bypass the window check for out-of-range intervals
+	if interval < minInterval || interval > maxInterval {
+		return true
+	}
+
+	// Find the last tick: most recent multiple of the interval since Unix epoch
+	intervalNs := interval.Nanoseconds()
+	lastTickNs := (now.UnixNano() / intervalNs) * intervalNs
+	lastTick := time.Unix(0, lastTickNs).UTC()
+	nextTick := lastTick.Add(interval)
+
+	windowStart := lastTick.Add(margin)
+	windowEnd := nextTick.Add(-margin)
+
+	// now must be in [windowStart, windowEnd)
+	return !now.Before(windowStart) && now.Before(windowEnd)
 }
 
 // Made with Bob
