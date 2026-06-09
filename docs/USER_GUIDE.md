@@ -364,7 +364,7 @@ For the mock operator to protect workloads, a migration script must be run from 
 - Adds required Ramen restore annotation
 - Creates target namespaces automatically
 
-Save as `migrate-pvc-pv.sh`:
+Save as `migrate.sh`:
 
 ```bash
 #!/bin/bash
@@ -474,12 +474,12 @@ echo "Migration and VGR creation complete."
 
 **Make the script executable:**
 ```bash
-chmod +x migrate-pvc-pv.sh
+chmod +x migrate.sh
 ```
 
 **Usage:**
 ```bash
-./migrate-pvc-pv.sh <LABEL_QUERY> <C1> <C2> <VGR_NAME> <VGR_NS> <VGR_CLASS>
+./migrate.sh <LABEL_QUERY> <C1> <C2> <VGR_NAME> <VGR_NS> <VGR_CLASS>
 ```
 
 **Arguments:**
@@ -500,7 +500,7 @@ chmod +x migrate-pvc-pv.sh
 
 **Example:**
 ```bash
-./migrate-pvc-pv.sh \
+./migrate.sh \
   'ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   dr1 \
   dr2 \
