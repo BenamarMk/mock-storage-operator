@@ -14,7 +14,7 @@
 
 ## Overview
 
-The Mock Storage Operator simulates a storage vendor's VolumeGroupReplication implementation for DR testing with Ramen. It uses VolSync internally for actual data replication while presenting a storage-vendor-like interface.
+The Mock Storage Operator simulates a storage vendor's `VolumeGroupReplication` implementation for DR testing with Ramen. It uses VolSync internally for actual data replication while presenting a storage-vendor-like interface.
 
 **Key Features:**
 - Implements VolumeGroupReplication API (`replication.storage.openshift.io/v1alpha1`)
@@ -354,7 +354,7 @@ kubectl get vgr myapp-vgr -n myapp --context primary -o jsonpath='{.status.lastS
 
 ### Step 8: Migrate PVC/PV Resources (Required for Mock Operator)
 
-The `migrate.sh` script in the project root automates disaster recovery migration between Kubernetes clusters. It handles PVC/PV migration, VolSync secret synchronization, and VolumeGroupReplication setup.
+The `migrate.sh` script in the `scripts/` directory automates disaster recovery migration between Kubernetes clusters. It handles PVC/PV migration, VolSync secret synchronization, and VolumeGroupReplication setup.
 
 **Key Features:**
 - **Flexible PV Migration**: Control PV migration with `--no-pv` or provision local storage with `--local-pv`
@@ -363,12 +363,12 @@ The `migrate.sh` script in the project root automates disaster recovery migratio
 - **Namespace Scoping**: Optionally limit migration to a specific namespace with `--namespace`
 - **Hardware Discovery**: Automatically provisions local PVs on target cluster nodes (with `--local-pv`)
 
-**Script Location:** `./migrate.sh` (project root)
+**Script Location:** `scripts/migrate.sh`
 
 **Usage:**
 
 ```bash
-./migrate.sh [OPTIONS]
+scripts/migrate.sh [OPTIONS]
 ```
 
 **Required Options:**
@@ -394,7 +394,7 @@ The `migrate.sh` script in the project root automates disaster recovery migratio
 
 1. **Basic Migration (with PV migration):**
 ```bash
-./migrate.sh \
+scripts/migrate.sh \
   --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   --from-context=dr1 \
   --to-context=dr2 \
@@ -405,7 +405,7 @@ The `migrate.sh` script in the project root automates disaster recovery migratio
 
 2. **PVC-Only Migration (skip PV):**
 ```bash
-./migrate.sh \
+scripts/migrate.sh \
   --no-pv \
   --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   --from-context=dr1 \
@@ -417,7 +417,7 @@ The `migrate.sh` script in the project root automates disaster recovery migratio
 
 3. **Local Storage Provisioning:**
 ```bash
-./migrate.sh \
+scripts/migrate.sh \
   --local-pv \
   --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   --from-context=dr1 \
@@ -429,7 +429,7 @@ The `migrate.sh` script in the project root automates disaster recovery migratio
 
 4. **Namespace-Scoped Migration:**
 ```bash
-./migrate.sh \
+scripts/migrate.sh \
   --namespace=my-app \
   --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   --from-context=dr1 \
