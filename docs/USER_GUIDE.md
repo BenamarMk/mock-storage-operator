@@ -354,160 +354,127 @@ kubectl get vgr myapp-vgr -n myapp --context primary -o jsonpath='{.status.lastS
 
 ### Step 8: Migrate PVC/PV Resources (Required for Mock Operator)
 
-For the mock operator to protect workloads, a migration script must be run from the source cluster (Primary) where the application is running.
+The `migrate.sh` script in the project root automates disaster recovery migration between Kubernetes clusters. It handles PVC/PV migration, VolSync secret synchronization, and VolumeGroupReplication setup.
 
-**What it does:**
-- Migrates PersistentVolumeClaims (PVCs) and PersistentVolumes (PVs) from primary to secondary cluster
-- Filters resources by consistency group label
-- Strips cluster-specific metadata (uid, resourceVersion, managedFields, ownerReferences, status)
-- Prepares PVs for static binding by removing claimRef
-- Adds required Ramen restore annotation
-- Creates target namespaces automatically
+**Key Features:**
+- **Flexible PV Migration**: Control PV migration with `--no-pv` or provision local storage with `--local-pv`
+- **VolSync Integration**: Automatically syncs `volsync-rsync-tls-secret` across namespaces
+- **Annotation Filtering**: Preserves ACM, VolSync, and Argo CD annotations while stripping cluster-specific metadata
+- **Namespace Scoping**: Optionally limit migration to a specific namespace with `--namespace`
+- **Hardware Discovery**: Automatically provisions local PVs on target cluster nodes (with `--local-pv`)
 
-Save as `migrate.sh`:
-
-```bash
-#!/bin/bash
-
-# Usage check for 6 arguments
-if [ "$#" -ne 6 ]; then
-    echo "Usage: $0 <LABEL_QUERY> <CONTEXT_C1> <CONTEXT_C2> <VGR_NAME> <VGR_NAMESPACE> <VGR_CLASS>"
-    echo "Example: $0 'ramendr.openshift.io/consistency-group=my-cg' c1 c2 vgr-1 ramen-system vgrc-1"
-    exit 1
-fi
-
-# Assign arguments
-LABEL_QUERY=$1
-CONTEXT_C1=$2
-CONTEXT_C2=$3
-VGR_NAME=$4
-VGR_NAMESPACE=$5
-VGR_CLASS=$6
-
-# Extract CG value
-CG_VALUE=$(echo "$LABEL_QUERY" | cut -d'=' -f2)
-
-RESTORE_ANN="volumereplicationgroups.ramendr.openshift.io/ramen-restore"
-ACM_PREFIX="apps.open-cluster-management.io"
-CG_LABEL="ramendr.openshift.io/consistency-group"
-
-# Base cleaning logic (Notice: .metadata.annotations is removed from the wipe list)
-BASE_CLEAN='del(
-    .metadata.resourceVersion,
-    .metadata.uid,
-    .metadata.creationTimestamp,
-    .metadata.managedFields,
-    .metadata.ownerReferences,
-    .status
-)'
-
-# PV Specific: Wipe all annotations, add Ramen restore, isolate CG label
-JQ_FILTER_PV="$BASE_CLEAN | del(.spec.claimRef, .metadata.annotations)
-  | .metadata.annotations = {(\$ann): \"True\"}
-  | .metadata.labels = {(\$cg_key): .metadata.labels[\$cg_key]}"
-
-# PVC Specific:
-# 1. del(.metadata.finalizers) -> prevents deletion hangs
-# 2. .metadata.annotations //= {} -> ensure object exists
-# 3. Filter annotations: Keep only ACM keys + add Ramen key
-# 4. .metadata.labels -> isolate CG label
-JQ_FILTER_PVC="$BASE_CLEAN | del(.metadata.finalizers)
-  | .metadata.annotations //= {}
-  | .metadata.annotations |= (with_entries(select(.key | startswith(\"$ACM_PREFIX\"))) + {(\$ann): \"True\"})
-  | .metadata.labels = {(\$cg_key): .metadata.labels[\$cg_key]}"
-
-echo "Starting migration: $CONTEXT_C1 -> $CONTEXT_C2"
-
-# 1. Process PVs and PVCs
-PVCS=$(kubectl --context="$CONTEXT_C1" get pvc -A -l "$LABEL_QUERY" -o jsonpath='{range .items[*]}{.metadata.namespace}{":"}{.metadata.name}{" "}{end}')
-
-if [ -z "$PVCS" ]; then
-    echo "No PVCs found for $LABEL_QUERY"
-else
-    for entry in $PVCS; do
-        NAMESPACE=$(echo "$entry" | cut -d':' -f1)
-        PVC_NAME=$(echo "$entry" | cut -d':' -f2)
-        
-        PV_NAME=$(kubectl --context="$CONTEXT_C1" -n "$NAMESPACE" get pvc "$PVC_NAME" -o jsonpath='{.spec.volumeName}')
-        
-        if [ -n "$PV_NAME" ]; then
-            echo "[PV]  Migrating: $PV_NAME"
-            kubectl --context="$CONTEXT_C1" get pv "$PV_NAME" -o json | \
-            jq --arg ann "$RESTORE_ANN" --arg cg_key "$CG_LABEL" "$JQ_FILTER_PV" | \
-            kubectl --context="$CONTEXT_C2" apply -f -
-        fi
-
-        kubectl --context="$CONTEXT_C2" create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl --context="$CONTEXT_C2" apply -f -
-
-        echo "[PVC] Migrating (Filtering ACM Annotations): $NAMESPACE/$PVC_NAME"
-        kubectl --context="$CONTEXT_C1" -n "$NAMESPACE" get pvc "$PVC_NAME" -o json | \
-        jq --arg ann "$RESTORE_ANN" --arg cg_key "$CG_LABEL" "$JQ_FILTER_PVC" | \
-        kubectl --context="$CONTEXT_C2" apply -f -
-    done
-fi
-
-echo "---------------------------------------------------"
-echo "Creating VolumeGroupReplication (VGR) on $CONTEXT_C2..."
-
-kubectl --context="$CONTEXT_C2" create namespace "$VGR_NAMESPACE" --dry-run=client -o yaml | kubectl --context="$CONTEXT_C2" apply -f -
-
-cat <<EOF | kubectl --context="$CONTEXT_C2" apply -f -
-apiVersion: replication.storage.openshift.io/v1alpha1
-kind: VolumeGroupReplication
-metadata:
-  labels:
-    ramendr.openshift.io/created-by-ramen: "true"
-  name: $VGR_NAME
-  namespace: $VGR_NAMESPACE
-spec:
-  external: true
-  replicationState: secondary
-  source:
-    selector:
-      matchLabels:
-        $CG_LABEL: $CG_VALUE
-  volumeGroupReplicationClassName: $VGR_CLASS
-EOF
-
-echo "Migration and VGR creation complete."
-```
-
-**Make the script executable:**
-```bash
-chmod +x migrate.sh
-```
+**Script Location:** `./migrate.sh` (project root)
 
 **Usage:**
+
 ```bash
-./migrate.sh <LABEL_QUERY> <C1> <C2> <VGR_NAME> <VGR_NS> <VGR_CLASS>
+./migrate.sh [OPTIONS]
 ```
 
-**Arguments:**
-- `LABEL_QUERY`: Label selector to identify PVCs to migrate. Found in the PVC's `metadata.labels`:
-  ```yaml
-  apiVersion: v1
-  kind: PersistentVolumeClaim
-  metadata:
-    labels:
-      ramendr.openshift.io/consistency-group: 48cc84f712b8dcb1f9ea
-  ```
-  Use format: `'ramendr.openshift.io/consistency-group=<cg-id>'`
-- `C1`: Kubernetes context name for the primary (source) cluster
-- `C2`: Kubernetes context name for the secondary (destination) cluster
-- `VGR_NAME`: Name for the VolumeGroupReplication resource to create on secondary cluster (use the VGR name from the primary cluster)
-- `VGR_NS`: Namespace where the VGR will be created (typically `ramen-system`)
-- `VGR_CLASS`: Name of the VolumeGroupReplicationClass to use
+**Required Options:**
 
-**Example:**
+| Option | Description |
+|--------|-------------|
+| `--label` | Label query to filter PVCs (e.g., `'ramendr.openshift.io/consistency-group=<id>'`) |
+| `--from-context` | Source cluster context name |
+| `--to-context` | Target cluster context name |
+| `--vgr-name` | VolumeGroupReplication resource name |
+| `--vgr-ns` | VGR namespace (typically `ramen-system`) |
+| `--vgr-class` | VolumeGroupReplicationClass name |
+
+**Optional Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--namespace` | Limit migration to specific namespace |
+| `--no-pv` | Skip PV migration (PVC only) |
+| `--local-pv` | Provision local PVs on target cluster |
+
+**Examples:**
+
+1. **Basic Migration (with PV migration):**
 ```bash
 ./migrate.sh \
-  'ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
-  dr1 \
-  dr2 \
-  global-48cc84f712b8dcb1f9ea \
-  ramen-system \
-  vgrc-1
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
 ```
+
+2. **PVC-Only Migration (skip PV):**
+```bash
+./migrate.sh \
+  --no-pv \
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
+```
+
+3. **Local Storage Provisioning:**
+```bash
+./migrate.sh \
+  --local-pv \
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
+```
+
+4. **Namespace-Scoped Migration:**
+```bash
+./migrate.sh \
+  --namespace=my-app \
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
+```
+
+**What the Script Does:**
+
+1. **Validates Arguments**: Ensures all required parameters are provided
+2. **Discovers PVCs**: Queries source cluster for PVCs matching the label selector
+3. **Provisions Local Storage** (if `--local-pv`): Scans target cluster nodes for available disks and creates local PVs
+4. **Syncs VolSync Secrets**: Ensures identical `volsync-rsync-tls-secret` exists in all namespaces on both clusters
+5. **Migrates PVs** (unless `--no-pv` or `--local-pv`): Copies PVs with sanitized metadata
+6. **Migrates PVCs**: Copies PVCs while preserving ACM, VolSync, and Argo CD annotations
+7. **Creates VGR**: Deploys VolumeGroupReplication resource on target cluster in secondary state
+
+**Annotation Filtering:**
+
+The script intelligently filters annotations to maintain GitOps and multi-cluster management continuity:
+
+**Preserved Annotation Prefixes:**
+- `apps.open-cluster-management.io/*` - ACM tracking
+- `volsync.backube/*` - VolSync replication state
+- `argocd.argoproj.io/*` - Argo CD tracking
+
+**Always Added:**
+- `volumereplicationgroups.ramendr.openshift.io/ramen-restore: "True"` - Ramen recovery marker
+
+**Local PV Configuration:**
+
+When using `--local-pv`, configure the node list in the script (lines 16-17):
+
+```bash
+LOCAL_NODES=("compute-0" "compute-1" "compute-2")
+LOCAL_SC="localblock"
+```
+
+The script will:
+- Create `localblock` StorageClass
+- Scan each node for available NVMe/SSD disks (excluding boot disk `sda`)
+- Extract disk WWN identifiers
+- Create node-affinity PVs pointing to physical devices
 
 > [!IMPORTANT]
 > **This migration script must be run ONLY ONCE after deploying your application(s) and it should be run from the primary cluster.**
