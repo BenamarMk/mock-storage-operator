@@ -15,6 +15,8 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,9 +62,9 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 	r.logger.V(1).Info("Reconciling as primary")
 
 	// Phase 1: Check if safe to proceed with failover (if VRG is in failover state)
-	if result, err := r.checkFailoverSafety(); err != nil || result != nil {
-		return *result, err
-	}
+	// if result, err := r.checkFailoverSafety(); err != nil || result != nil {
+	// 	return *result, err
+	// }
 
 	// Phase 2: Validate PVC selector
 	if r.vgr.Spec.Source.Selector == nil {
@@ -80,15 +82,36 @@ func (r *PrimaryReconciler) Reconcile() (ctrl.Result, error) {
 		return *result, err
 	}
 
+	r.logger.Info("Fetching PersistentVolumeClaims", "pvcSelector", sel)
 	// Phase 4: Get PVC list - filter by selector and owner labels
+	// Start from your existing selector (parsed from the CR)
+	requirements, _ := sel.Requirements()
+
+	// Build a labels.Selector that also includes the VGR owner labels
+	combinedSel := labels.NewSelector()
+	for _, req := range requirements {
+		combinedSel = combinedSel.Add(req)
+	}
+
+	ownerReq, _ := labels.NewRequirement(
+		volsync.VGROwnerLabel, selection.Equals, []string{r.vgr.Name},
+	)
+	// nsReq, _ := labels.NewRequirement(
+	// 	volsync.VGROwnerNamespaceLabel, selection.Equals, []string{r.vgr.Namespace},
+	// )
+	combinedSel = combinedSel.Add(*ownerReq)
+
 	pvcList := &corev1.PersistentVolumeClaimList{}
 	if err := r.client.List(r.ctx, pvcList,
-		client.MatchingLabelsSelector{Selector: sel},
-		client.MatchingLabels{
-			volsync.VGROwnerLabel:          r.vgr.Name,
-			volsync.VGROwnerNamespaceLabel: r.vgr.Namespace,
-		}); err != nil {
+		client.MatchingLabelsSelector{Selector: combinedSel},
+	); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	if len(pvcList.Items) == 0 {
+		r.logger.Info("No PVCs found for VRG", "vrg", r.vgr.Name)
+
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
 
 	// Phase 5: Get configuration
@@ -430,7 +453,6 @@ func (r *PrimaryReconciler) updateStatus(
 
 	return r.client.Status().Update(r.ctx, r.vgr)
 }
-
 
 // ParseSchedulingInterval parses a scheduling interval string (e.g. "5m", "10m", "15m")
 // into a time.Duration. Returns an error if the format is invalid.
