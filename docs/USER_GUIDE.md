@@ -105,7 +105,7 @@ Deploy the operator on **both clusters** (primary and secondary):
 
 ```bash
 # Deploy using Kustomize from GitHub
-kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=agnostic-storage'
+kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=main'
 ```
 
 **What this does:**
@@ -612,7 +612,7 @@ parameters:
 2. **Deploy operator on both clusters**
    ```bash
    # On both clusters
-   kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=agnostic-storage'
+   kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=main'
    ```
 
 3. **Create namespace and PSK secret on both clusters**
@@ -908,7 +908,7 @@ kubectl get clusterrolebinding mock-storage-operator-manager-rolebinding
 kubectl get sa -n mock-storage-operator-system
 
 # Reapply RBAC if missing
-kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/rbac?ref=agnostic-storage'
+kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/rbac?ref=main'
 ```
 
 ---
@@ -953,7 +953,7 @@ Here's a complete working example for a simple application:
 # On both clusters
 kubectl apply -k "github.com/csi-addons/kubernetes-csi-addons/config/crd?ref=v0.14.0"
 helm install volsync backube/volsync -n volsync-system --create-namespace
-kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=agnostic-storage'
+kubectl apply -k 'https://github.com/BenamarMk/mock-storage-operator/config/default?ref=main'
 ```
 
 ### 2. Create Namespace and Secrets
