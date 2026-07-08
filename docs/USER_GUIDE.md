@@ -260,6 +260,7 @@ The VolumeGroupReplication resource has three possible states:
 |-------|-------------|--------------|
 | `primary` | Creates ReplicationSources that push data | Source cluster |
 | `secondary` | Creates ReplicationDestinations that receive data | Destination cluster |
+| `error` | Replication failed; check VGR conditions for details | Either |
 
 ### Step 4: Create Application PVC
 
@@ -392,33 +393,33 @@ scripts/migrate.sh [OPTIONS]
 
 **Examples:**
 
-1. **Basic Migration (with PV migration):**
-```bash
-scripts/migrate.sh \
-  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
-  --from-context=dr1 \
-  --to-context=dr2 \
-  --vgr-name=global-48cc84f712b8dcb1f9ea \
-  --vgr-ns=ramen-system \
-  --vgr-class=vgrc-1
-```
-
-2. **PVC-Only Migration (skip PV):**
-```bash
-scripts/migrate.sh \
-  --no-pv \
-  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
-  --from-context=dr1 \
-  --to-context=dr2 \
-  --vgr-name=global-48cc84f712b8dcb1f9ea \
-  --vgr-ns=ramen-system \
-  --vgr-class=vgrc-1
-```
-
-3. **Local Storage Provisioning:**
+1. **Local Storage Provisioning (Used with LSO):**
 ```bash
 scripts/migrate.sh \
   --local-pv \
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
+```
+
+2. **Basic Migration (with PV migration):**
+```bash
+scripts/migrate.sh \
+  --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
+  --from-context=dr1 \
+  --to-context=dr2 \
+  --vgr-name=global-48cc84f712b8dcb1f9ea \
+  --vgr-ns=ramen-system \
+  --vgr-class=vgrc-1
+```
+
+3. **PVC-Only Migration (skip PV):**
+```bash
+scripts/migrate.sh \
+  --no-pv \
   --label='ramendr.openshift.io/consistency-group=48cc84f712b8dcb1f9ea' \
   --from-context=dr1 \
   --to-context=dr2 \
@@ -463,16 +464,16 @@ The script intelligently filters annotations to maintain GitOps and multi-cluste
 
 **Local PV Configuration:**
 
-When using `--local-pv`, configure the node list in the script (lines 16-17):
+When using `--local-pv`, the StorageClass name defaults to `localblock`. To override it, edit `LOCAL_SC` on line 16 of the script:
 
 ```bash
-LOCAL_NODES=("compute-0" "compute-1" "compute-2")
-LOCAL_SC="localblock"
+LOCAL_SC="localblock"   # change if needed
 ```
 
 The script will:
-- Create `localblock` StorageClass
-- Scan each node for available NVMe/SSD disks (excluding boot disk `sda`)
+- Create the `localblock` StorageClass on the target cluster
+- Derive the target node and disk index from each PVC's source PV name (expected pattern: `local-pv-disk-<node>-<index>`)
+- Scan the target node for available NVMe/SSD disks (excluding boot disk `sda`)
 - Extract disk WWN identifiers
 - Create node-affinity PVs pointing to physical devices
 
